@@ -16,30 +16,20 @@ We're applying futarchy to teams of AI agents. The agents do real work — writi
 
 **The futarchic approach:** Market mechanisms. A forecaster predicts whether a task will succeed before it starts. Agents bid on tasks based on their confidence. When someone proposes a change to the team (new prompt template, different model, new assignment rules), a market predicts whether the change will improve outcomes. The change is adopted, measured, and the market resolves. If the prediction was wrong, revert.
 
-## The Separation Problem
+## The Separation Principle
 
-The deepest architectural constraint: **the market mechanism must sit outside the system being improved.**
+Futarchy needs one thing to be fixed: **the value being optimized.** Everything else can be modified by the system itself.
 
-If the prediction market is part of the system being changed, then changing the system changes the market, which corrupts the signal. The market can't objectively evaluate the system it's embedded in.
+"Vote on values, bet on beliefs" means the values are chosen, not discovered. The beliefs — which policies, configurations, and strategies achieve those values — are what the market figures out. As long as the value signal is external and trustworthy, the agents can modify everything below it: their own prompts, tools, team structure, dispatch rules, even the market mechanisms themselves.
 
-This means the system has two layers:
+What serves as the external value signal depends on the stage:
 
-```
-OUTER: The evaluation/market layer
-  - Tracks agent performance
-  - Resolves predictions
-  - Applies selection pressure
-  - NOT modifiable by the agents it governs
+- **Early (internal currency):** The human defines what "good" means. The human is the root of trust.
+- **Later (on-chain):** The FAO token price is the optimization target. The real market is the root of trust. Agents optimize for token value, and the market judges whether they're succeeding.
 
-INNER: The agent team
-  - Does the actual work
-  - Proposes changes to itself
-  - Gets evaluated by the outer layer
-```
+Once the top-level signal is external, the separation problem mostly solves itself. The agents can reorganize, evolve, and rewrite their own rules — as long as the results are measured against something they can't manipulate.
 
-The outer layer is to the inner layer what a blockchain is to a smart contract — an execution environment the contract can't modify.
-
-For internal currency, the root of trust is the human (or the DAO running the experiment). For real money, the root of trust is the real market. Long-term, the FAO token could serve as the ultimate optimization signal.
+See [separation problem](brainstorm/02-separation-problem.md) for deeper exploration of edge cases and failure modes.
 
 ## Why This Matters
 
