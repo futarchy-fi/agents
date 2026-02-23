@@ -26,6 +26,18 @@ A good test encodes a belief about the system that isn't obvious from reading th
 - Individual functions in isolation when the round-trip test covers them
 - Anything where the test is just restating the implementation
 
+### Tests come first
+
+Write tests before the implementation exists, or at least before running them. Tests encode what the system SHOULD do, not what it DOES do. The workflow:
+
+1. Write the full test suite based on the spec and invariants.
+2. Do NOT run the tests while writing them.
+3. Build the implementation.
+4. Run the tests. Fix the implementation to make them pass.
+5. If a test fails and the test is wrong, review it very carefully before changing it. A test is a contract — changing it means changing what we believe the system should do. That's a design decision, not a bug fix.
+
+This discipline matters because running tests while writing them creates a feedback loop that optimizes for passing, not for correctness. You end up testing what the code does rather than what it should do.
+
 ### How to structure tests
 
 Each test should read like a story: setup a scenario, do something interesting, verify a non-obvious property. Name tests after the property they verify, not the function they call. `test_credits_conserved_after_random_trades` is better than `test_buy_function`.
