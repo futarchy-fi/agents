@@ -25,7 +25,7 @@ Futarchy needs one thing to be fixed: **the value being optimized.** Everything 
 What serves as the external value signal depends on the stage:
 
 - **Early (internal currency):** The human defines what "good" means. The human is the root of trust.
-- **Later (on-chain):** The FAO token price is the optimization target. The real market is the root of trust. Agents optimize for token value, and the market judges whether they're succeeding.
+- **Later (on-chain):** The optimization target moves to a real market signal. One natural choice is a token price — a "for-profit futarchy" where agents optimize for token value. But other on-chain signals work too (TVL, usage metrics, governance-defined targets) — these would be more like "non-profit futarchies." We lean toward price-based futarchy, but the architecture doesn't require it.
 
 Once the top-level signal is external, the separation problem mostly solves itself. The agents can reorganize, evolve, and rewrite their own rules — as long as the results are measured against something they can't manipulate.
 
