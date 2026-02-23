@@ -78,69 +78,78 @@ Hanson's market scoring rule. The system is the market maker.
 - Prices are proper probabilities
 - Works with very few participants
 
-## Data Models (Draft)
+## Data Models
 
-### Account (risk engine side)
+See `core/models.py` for the implementation. Key structures:
+
+### Risk Side
 
 ```
+Lock:
+  lock_id: int (sequential)
+  account_id: int
+  market_id: int
+  amount: Decimal             # always positive, asset precision (6dp)
+  lock_type: str              # "position", "limit_order", etc.
+
 Account:
-  id: str
-  balance: float              # available credits
-  locks: [                    # credits locked in markets
-    { market_id, amount, order_id }
-  ]
-  created_at: str
+  id: int (sequential)
+  balance: Decimal            # available credits
+  locks: [Lock]               # credits locked in markets, itemized
+  # derived: locked, total
+  # AMM pools are accounts too
+
+Transaction:
+  id: int (sequential)
+  account_id: int
+  amount: Decimal             # positive = credit, negative = debit
+  reason: str
+  market_id: int              # null for minting
+  trade_id: int               # which trade caused this
+  lock_id: int                # which lock was affected
 ```
 
-`locked` is derived: sum of all locks. Each lock is traceable to a specific market and order.
-
-### Market (market engine side)
+### Market Side
 
 ```
+TradeLeg:                     # one side of a trade
+  account_id: int
+  available_delta: Decimal    # change to available balance
+  frozen_delta: Decimal       # change to locked balance
+  lock_id: int                # which lock is affected
+  tx_id: int                  # corresponding ledger entry
+
+Trade:
+  id: int (sequential)
+  market_id: int
+  outcome: str                # "yes" or "no"
+  amount: Decimal             # tokens traded (market precision, 4dp)
+  price: Decimal              # execution price (market precision)
+  buyer: TradeLeg
+  seller: TradeLeg
+
 Market:
-  id: str
+  id: int (sequential)
+  amm_account_id: int         # AMM is a regular account
   type: str                   # "conditional_prediction_market"
   category: str               # "pr_merge"
+  category_id: str            # "futarchy-fi/agents#1"
   question: str
+  precision: int              # decimal places for prices/amounts (default 4)
   status: str                 # "open", "resolved", "void"
   outcomes: ["yes", "no"]
-  resolution: str             # null, or winning outcome
-  metadata: dict              # { repo, pr_number, ... }
-  b: float                    # LMSR liquidity parameter
-  q: { "yes": 0.0, "no": 0.0 }  # LMSR quantities sold
-  positions: {                # who holds what (market owns this)
-    "account_1": { "yes": 5.0, "no": 0.0 },
-    "account_2": { "yes": 0.0, "no": 3.0 }
+  b: Decimal                  # LMSR liquidity parameter
+  q: { "yes": Decimal, ... }  # LMSR quantities sold
+  positions: {                # who holds what (keyed by account ID)
+    1: { "yes": Decimal, "no": Decimal },
+    2: { "yes": Decimal, "no": Decimal }
   }
+  trades: [Trade]
   deadline: str               # void if unresolved by then
-  created_at: str
-  resolved_at: str
 ```
 
-### Trade
-
-```
-Trade:
-  id: str
-  market_id: str
-  account_id: str
-  outcome: str                # "yes" or "no"
-  amount: float               # tokens bought (negative if selling)
-  cost: float                 # credits paid (negative if received)
-  created_at: str
-```
-
-### Transaction (append-only log)
-
-```
-Transaction:
-  id: str
-  account_id: str
-  amount: float               # positive = credit, negative = debit
-  reason: str
-  market_id: str              # null for minting
-  created_at: str
-```
+Two precisions: asset precision (CREDITS = 6dp) for credit amounts,
+market precision (default 4dp) for prices and token amounts.
 
 ## Implementation Plan
 
