@@ -8,7 +8,9 @@ A **futarchic organization** is one where decisions are made by betting, not by 
 
 We're building this for AI agent teams first. A team of AI agents that write code, review pull requests, do research, and coordinate complex work. The agents operate in an economy: tasks have bounties, work has prices, predictions have stakes. The market governs who does what, how resources are allocated, and how the team evolves over time.
 
-This isn't a new idea. [Futarchy](https://mason.gmu.edu/~rhanson/futarchy.html) was proposed by Robin Hanson in 2000 as a form of government. [Jeffrey Wernick](https://www.overcomingbias.com/p/hail-jeffrey-wernick) actually ran a company governed by prediction markets in the 1980s. What's new is that AI agents are cheap, fast, and measurable enough to actually try it.
+This isn't a new idea. [Futarchy](https://mason.gmu.edu/~rhanson/futarchy.html) was proposed by Robin Hanson in 2000 as a form of government. [Jeffrey Wernick](https://www.overcomingbias.com/p/hail-jeffrey-wernick) actually ran a company governed by prediction markets in the 1980s. More recently, [MetaDAO](https://docs.metadao.fi/) brought futarchy on-chain on Solana — using conditional markets on token price to govern DAO proposals. [Combinator](https://docs.combinator.trade/) extended this with multi-option "quantum markets" for token parameter optimization. [Optimism](https://gov.optimism.io/t/futarchy-v1-preliminary-findings/10062) ran a futarchy experiment for grant allocation.
+
+All of these govern human organizations making discrete decisions (pass a proposal, set a fee, allocate a grant). What none of them do is govern an **autonomous agent team** — an organization where the actors themselves are AI, the feedback loop is tight (hours, not weeks), and the market continuously steers operational behavior rather than voting on proposals one at a time.
 
 ## Why Agent Teams?
 
