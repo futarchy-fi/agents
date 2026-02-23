@@ -1,0 +1,60 @@
+# Futarchic Organizations
+
+The core thesis of this project.
+
+## What Is Futarchy?
+
+Futarchy is a governance system proposed by economist Robin Hanson: **"vote on values, bet on beliefs."** You decide what you want (values), then use prediction markets to determine which policies will achieve it (beliefs). The policy that the market predicts will work best gets adopted.
+
+In traditional organizations, decisions are made by authority — a manager, a committee, a founder. In a futarchic organization, decisions are made by a market, and the market is held accountable to measured outcomes.
+
+## Applied to Agent Teams
+
+We're applying futarchy to teams of AI agents. The agents do real work — writing code, reviewing pull requests, researching questions, coordinating projects. The question is: how should the team be governed?
+
+**The conventional approach:** Fixed rules. Retry failed tasks 3 times. Assign tasks round-robin. Use the same model for everything. A human writes the rules, and the rules don't change unless the human changes them.
+
+**The futarchic approach:** Market mechanisms. A forecaster predicts whether a task will succeed before it starts. Agents bid on tasks based on their confidence. When someone proposes a change to the team (new prompt template, different model, new assignment rules), a market predicts whether the change will improve outcomes. The change is adopted, measured, and the market resolves. If the prediction was wrong, revert.
+
+## The Separation Principle
+
+Futarchy needs one thing to be fixed: **the value being optimized.** Everything else can be modified by the system itself.
+
+"Vote on values, bet on beliefs" means the values are chosen, not discovered. The beliefs — which policies, configurations, and strategies achieve those values — are what the market figures out. As long as the value signal is external and trustworthy, the agents can modify everything below it: their own prompts, tools, team structure, dispatch rules, even the market mechanisms themselves.
+
+What serves as the external value signal depends on the stage:
+
+- **Early (internal currency):** The human defines what "good" means. The human is the root of trust.
+- **Later (on-chain):** The optimization target moves to a real market signal. One natural choice is a token price — a "for-profit futarchy" where agents optimize for token value. But other on-chain signals work too (TVL, usage metrics, governance-defined targets) — these would be more like "non-profit futarchies." We lean toward price-based futarchy, but the architecture doesn't require it.
+
+Once the top-level signal is external, the separation problem mostly solves itself. The agents can reorganize, evolve, and rewrite their own rules — as long as the results are measured against something they can't manipulate.
+
+See [separation problem](brainstorm/02-separation-problem.md) for deeper exploration of edge cases and failure modes.
+
+## Why This Matters
+
+Most AI agent frameworks are governed by heuristics that someone hardcoded. They don't learn, they don't adapt, and they can't tell you whether a change helped or hurt.
+
+A futarchic agent team learns its own governance from evidence. Decisions are made by betting, and bets are settled by reality. Over time, the team converges on governance rules that actually work — not because someone designed them, but because the market selected them.
+
+This is also a testbed for futarchy itself. If it works for agent teams — fast, measurable, forkable — it builds evidence for applying futarchic governance more broadly.
+
+## Components
+
+Futarchic organizations need several things to work. Each is explored in the [brainstorm folder](brainstorm/00-INDEX.md).
+
+1. **Market mechanisms.** Not just prediction markets — any mechanism that produces prices reflecting collective beliefs. Asset prices, prediction markets, conditional markets, bounty auctions. The common thread: information is aggregated through trading, not through committees. See [reviewer mechanism](brainstorm/04-reviewer-mechanism.md).
+
+2. **An economy.** Agents need currency to stake, earn, and spend. Different agents earn in different ways — coders ship code, reviewers evaluate work, forecasters make predictions. Supply and demand determines what each agent's time is worth. See [agent economy](brainstorm/03-agent-economy.md).
+
+3. **Evolution.** Market signals need to drive actual change. Agents whose configurations earn more reproduce. Those that lose money get replaced. No model retraining — what evolves is the scaffolding (prompts, tool configs, strategies). In a permissionless system, anyone can bring their own agents and compete. See [evolution](brainstorm/06-evolution.md).
+
+4. **Measurement.** You need to know whether things are getting better. The principled approach: counterfactual evaluation. Compare outcomes with and without an agent's contribution. See [counterfactual eval](brainstorm/07-counterfactual-eval.md).
+
+5. **Real stakes.** Markets without stakes are polls. Internal currency can bootstrap this. Real money is the endgame. See [path to market](brainstorm/08-path-to-market.md).
+
+## What We Don't Know
+
+We think futarchic governance will produce better agent teams than hand-tuned rules. We don't have proof yet. The point of this project is to find out.
+
+Specific things we're still figuring out: whether internal currency creates enough pressure to drive real improvement, what the simplest useful market mechanism looks like, and how much human oversight is needed before the system earns trust to run autonomously. These are empirical questions — we'll answer them by building and measuring.
