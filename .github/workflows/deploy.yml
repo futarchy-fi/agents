@@ -1,0 +1,42 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pytest-asyncio fastapi httpx "uvicorn[standard]"
+      - run: pytest -v
+        env:
+          FUTARCHY_ADMIN_KEY: test-ci-key
+          FUTARCHY_STATE: /tmp/futarchy_ci_state.json
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ubuntu
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/futarchy/agents
+            git fetch origin main
+            git reset --hard origin/main
+            source .venv/bin/activate
+            pip install -q fastapi "uvicorn[standard]" httpx
+            sudo systemctl restart futarchy
+            sleep 2
+            curl -sf http://localhost:8000/v1/health || (journalctl -u futarchy -n 20 --no-pager && exit 1)
+            echo "Deploy successful"

@@ -13,5 +13,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pytest
+      - run: pip install pytest pytest-asyncio fastapi httpx "uvicorn[standard]"
       - run: pytest -v
+        env:
+          FUTARCHY_ADMIN_KEY: test-ci-key
+          FUTARCHY_STATE: /tmp/futarchy_ci_state.json
