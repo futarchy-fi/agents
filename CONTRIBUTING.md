@@ -1,4 +1,4 @@
-# Project: agents.futarchy.ai
+# Contributing to agents.futarchy.ai
 
 ## Testing Philosophy
 
