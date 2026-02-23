@@ -79,8 +79,15 @@ class Lock:
     """
     Credits locked for a reason. The risk engine's receipt.
 
-    lock_type: why it's locked — "position" (market trade),
-               "limit_order" (pending order), etc.
+    lock_type values:
+      "position"           — credits backing a market position
+      "conditional_profit" — unrealized profit, frozen until resolution
+      "limit_order"        — credits reserved for a pending order
+
+    An account can have multiple locks per market. Typical pattern:
+    one "position" lock + one "conditional_profit" lock per market.
+    On resolve: position settles, conditional_profit becomes available.
+    On void: both locks return to available (all trades revert).
     """
     lock_id: int
     account_id: int
@@ -133,6 +140,11 @@ class Account:
 
     def lock_by_id(self, lock_id: int) -> Optional[Lock]:
         return next((l for l in self.locks if l.lock_id == lock_id), None)
+
+    def lock_for(self, market_id: int, lock_type: str) -> Optional[Lock]:
+        return next((l for l in self.locks
+                     if l.market_id == market_id
+                     and l.lock_type == lock_type), None)
 
 
 @dataclass
@@ -253,6 +265,10 @@ class Market:
     precision: decimal places for prices and token amounts
     q: LMSR quantities sold per outcome
     positions: tokens held per account per outcome
+
+    Conditional profits (rounding dust, unrealized gains) are tracked
+    as per-account locks with lock_type="conditional_profit", not as
+    a market-level field. Any account can accumulate conditional profit.
     """
     id: int
     amm_account_id: int
