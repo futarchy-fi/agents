@@ -1,11 +1,16 @@
 [project]
 name = "agents-futarchy"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "httpx>=0.28",
+]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0"]
+test = ["pytest>=8.0", "pytest-asyncio>=0.25", "httpx>=0.28"]
 
 [tool.pytest.ini_options]
 testpaths = ["core"]
+asyncio_mode = "auto"

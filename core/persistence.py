@@ -25,6 +25,13 @@ from core.models import (
 from core.risk_engine import RiskEngine
 from core.market_engine import MarketEngine
 
+# Optional import — auth module may not exist in older setups
+try:
+    from core.auth import AuthStore, User
+    _HAS_AUTH = True
+except ImportError:
+    _HAS_AUTH = False
+
 
 # ---------------------------------------------------------------------------
 # Serialization
@@ -146,21 +153,17 @@ def _load_market(d: dict) -> Market:
 # Schema versioning
 # ---------------------------------------------------------------------------
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 
-# Migrations: each takes a state dict at version N and returns version N+1.
-# Add new migrations here as the schema evolves.
-#
-# Example:
-#   def _migrate_1_to_2(state):
-#       for m in state["markets"]:
-#           m["new_field"] = "default"
-#       state["version"] = 2
-#       return state
-#
-#   _MIGRATIONS = {1: _migrate_1_to_2, 2: _migrate_2_to_3, ...}
 
-_MIGRATIONS: dict[int, callable] = {}
+def _migrate_1_to_2(state: dict) -> dict:
+    """Add auth section to snapshot."""
+    state["auth"] = {"users": []}
+    state["version"] = 2
+    return state
+
+
+_MIGRATIONS: dict[int, callable] = {1: _migrate_1_to_2}
 
 
 def _apply_migrations(state: dict) -> dict:
@@ -181,9 +184,9 @@ def _apply_migrations(state: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
-                  path: str) -> None:
+                  path: str, auth_store=None) -> None:
     """
-    Save complete RE + ME state to a JSON file.
+    Save complete RE + ME + auth state to a JSON file.
     Atomic: writes to .tmp then renames.
     """
     state = {
@@ -192,6 +195,7 @@ def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
         "accounts": [_serialize(acc) for acc in risk.accounts.values()],
         "transactions": [_serialize(tx) for tx in risk.transactions],
         "markets": [_serialize(m) for m in market_engine.markets.values()],
+        "auth": _serialize_auth(auth_store) if auth_store else {"users": []},
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -199,11 +203,46 @@ def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
     os.replace(tmp, path)
 
 
-def load_snapshot(path: str) -> tuple[RiskEngine, MarketEngine]:
+def _serialize_auth(auth_store) -> dict:
+    """Serialize auth store to JSON-safe dict."""
+    users = []
+    for user in auth_store.users.values():
+        users.append({
+            "github_id": user.github_id,
+            "github_login": user.github_login,
+            "account_id": user.account_id,
+            "api_key_hash": user.api_key_hash,
+            "created_at": user.created_at,
+            "last_seen_at": user.last_seen_at,
+        })
+    return {"users": users}
+
+
+def _load_auth(auth_data: dict):
+    """Load auth store from snapshot data. Returns AuthStore or None."""
+    if not _HAS_AUTH:
+        return None
+    store = AuthStore()
+    for udata in auth_data.get("users", []):
+        user = User(
+            github_id=udata["github_id"],
+            github_login=udata["github_login"],
+            account_id=udata["account_id"],
+            api_key_hash=udata["api_key_hash"],
+            created_at=udata["created_at"],
+            last_seen_at=udata["last_seen_at"],
+        )
+        store.users[user.github_id] = user
+        store.key_to_user[user.api_key_hash] = user
+    return store
+
+
+def load_snapshot(path: str) -> tuple:
     """
-    Load RE + ME state from a JSON snapshot.
+    Load RE + ME + auth state from a JSON snapshot.
     Applies migrations automatically if the snapshot is an older version.
-    Returns (risk_engine, market_engine) ready to use.
+    Returns (risk_engine, market_engine, auth_store) ready to use.
+    auth_store is None if the auth module is not available.
     """
     with open(path) as f:
         state = json.load(f)
@@ -229,4 +268,7 @@ def load_snapshot(path: str) -> tuple[RiskEngine, MarketEngine]:
         market = _load_market(mdata)
         me.markets[market.id] = market
 
-    return risk, me
+    # Restore auth
+    auth_store = _load_auth(state.get("auth", {"users": []}))
+
+    return risk, me, auth_store
