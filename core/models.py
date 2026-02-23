@@ -105,28 +105,29 @@ class Account:
     """
     An account in the risk engine.
     The AMM for each market is also an account.
+
+    available_balance: credits free to spend or stake.
+    frozen_balance: credits locked in markets (sum of all locks).
     """
     id: int
-    balance: Decimal = ZERO
+    available_balance: Decimal = ZERO
+    frozen_balance: Decimal = ZERO
     locks: list[Lock] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
 
     @staticmethod
-    def new(balance: Decimal = ZERO) -> "Account":
-        return Account(id=next_id("account"), balance=quantize(balance))
-
-    @property
-    def locked(self) -> Decimal:
-        return sum((lock.amount for lock in self.locks), ZERO)
+    def new(available_balance: Decimal = ZERO) -> "Account":
+        return Account(id=next_id("account"),
+                       available_balance=quantize(available_balance))
 
     @property
     def total(self) -> Decimal:
-        return self.balance + self.locked
+        return self.available_balance + self.frozen_balance
 
     def locks_for_market(self, market_id: int) -> list[Lock]:
         return [l for l in self.locks if l.market_id == market_id]
 
-    def locked_in_market(self, market_id: int) -> Decimal:
+    def frozen_in_market(self, market_id: int) -> Decimal:
         return sum((l.amount for l in self.locks
                     if l.market_id == market_id), ZERO)
 
@@ -137,32 +138,42 @@ class Account:
 @dataclass
 class Transaction:
     """
-    Append-only ledger entry. Every credit movement gets one of these.
-    Positive amount = credits in. Negative = credits out.
+    Append-only ledger entry. Every balance change gets one of these.
 
-    Each trade produces corresponding transactions on the risk side.
+    available_delta: change to available balance (positive = credit)
+    frozen_delta: change to frozen balance (positive = lock)
+
+    On trade open:   available_delta = -cost, frozen_delta = +cost
+    On settlement:   frozen_delta = -locked, available_delta = +payout
+    On mint:         available_delta = +amount, frozen_delta = 0
     """
     id: int
     account_id: int
-    amount: Decimal
+    available_delta: Decimal
+    frozen_delta: Decimal
     reason: str
     market_id: Optional[int] = None
     trade_id: Optional[int] = None
+    trade_leg_id: Optional[int] = None
     lock_id: Optional[int] = None
     created_at: str = field(default_factory=_now)
 
     @staticmethod
-    def new(account_id: int, amount: Decimal, reason: str,
+    def new(account_id: int, available_delta: Decimal,
+            frozen_delta: Decimal, reason: str,
             market_id: Optional[int] = None,
             trade_id: Optional[int] = None,
+            trade_leg_id: Optional[int] = None,
             lock_id: Optional[int] = None) -> "Transaction":
         return Transaction(
             id=next_id("tx"),
             account_id=account_id,
-            amount=quantize(amount),
+            available_delta=quantize(available_delta),
+            frozen_delta=quantize(frozen_delta),
             reason=reason,
             market_id=market_id,
             trade_id=trade_id,
+            trade_leg_id=trade_leg_id,
             lock_id=lock_id,
         )
 
@@ -180,11 +191,25 @@ class TradeLeg:
     On settle: frozen_delta = -original_cost, available_delta = +payout
     Profit if payout > original cost. Loss if less.
     """
+    trade_leg_id: int
     account_id: int
     available_delta: Decimal
     frozen_delta: Decimal
     lock_id: Optional[int] = None
     tx_id: Optional[int] = None
+
+    @staticmethod
+    def new(account_id: int, available_delta: Decimal,
+            frozen_delta: Decimal, lock_id: Optional[int] = None,
+            tx_id: Optional[int] = None) -> "TradeLeg":
+        return TradeLeg(
+            trade_leg_id=next_id("trade_leg"),
+            account_id=account_id,
+            available_delta=quantize(available_delta),
+            frozen_delta=quantize(frozen_delta),
+            lock_id=lock_id,
+            tx_id=tx_id,
+        )
 
 
 @dataclass
