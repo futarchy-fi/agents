@@ -10,9 +10,14 @@ and knows where they're locked. What it doesn't know is the internal
 structure of markets — positions, outcome tokens, LMSR state. That
 belongs to the market engine.
 
-All monetary amounts use Decimal. Two precisions:
-- Asset precision (e.g. CREDITS = 6 dp) for credit amounts
-- Market precision (e.g. 4 dp) for prices and token amounts
+All monetary amounts use Decimal.
+
+Precision model (inspired by the matching engine):
+  ASSET_PRECISION = PRICE_PRECISION + AMOUNT_PRECISION
+  - Prices quantized to price_precision
+  - Token amounts (q-values) quantized to amount_precision
+  - Trade value = |amount| * price — exact at ASSET_PRECISION, no rounding
+  This eliminates cost rounding entirely. Only the price is rounded.
 """
 
 from collections import defaultdict
@@ -80,14 +85,17 @@ class Lock:
     Credits locked for a reason. The risk engine's receipt.
 
     lock_type values:
-      "position"           — credits backing a market position
+      "position:{outcome}" — credits backing one outcome's position
+                             (e.g. "position:yes", "position:no")
+      "position"           — AMM pool lock (undifferentiated)
       "conditional_profit" — unrealized profit, frozen until resolution
+      "conditional_loss"   — unrealized loss, frozen until resolution
       "limit_order"        — credits reserved for a pending order
 
     An account can have multiple locks per market. Typical pattern:
-    one "position" lock + one "conditional_profit" lock per market.
-    On resolve: position settles, conditional_profit becomes available.
-    On void: both locks return to available (all trades revert).
+    one "position:{outcome}" per traded outcome + one conditional lock.
+    On resolve: winning position settles at token value, losing at 0.
+    On void: all locks return to available (all trades revert).
     """
     lock_id: int
     account_id: int
@@ -102,7 +110,7 @@ class Lock:
             lock_id=next_id("lock"),
             account_id=account_id,
             market_id=market_id,
-            amount=quantize(amount),
+            amount=amount,
             lock_type=lock_type,
         )
 
@@ -125,7 +133,7 @@ class Account:
     @staticmethod
     def new(available_balance: Decimal = ZERO) -> "Account":
         return Account(id=next_id("account"),
-                       available_balance=quantize(available_balance))
+                       available_balance=available_balance)
 
     @property
     def total(self) -> Decimal:
@@ -180,8 +188,8 @@ class Transaction:
         return Transaction(
             id=next_id("tx"),
             account_id=account_id,
-            available_delta=quantize(available_delta),
-            frozen_delta=quantize(frozen_delta),
+            available_delta=available_delta,
+            frozen_delta=frozen_delta,
             reason=reason,
             market_id=market_id,
             trade_id=trade_id,
@@ -217,8 +225,8 @@ class TradeLeg:
         return TradeLeg(
             trade_leg_id=next_id("trade_leg"),
             account_id=account_id,
-            available_delta=quantize(available_delta),
-            frozen_delta=quantize(frozen_delta),
+            available_delta=available_delta,
+            frozen_delta=frozen_delta,
             lock_id=lock_id,
             tx_id=tx_id,
         )
@@ -262,13 +270,19 @@ class Market:
     type: the mechanism — "conditional_prediction_market"
     category: what it's about — "pr_merge", "task_completion", etc.
     category_id: specific instance — "futarchy-fi/agents#1", etc.
-    precision: decimal places for prices and token amounts
-    q: LMSR quantities sold per outcome
-    positions: tokens held per account per outcome
 
-    Conditional profits (rounding dust, unrealized gains) are tracked
-    as per-account locks with lock_type="conditional_profit", not as
-    a market-level field. Any account can accumulate conditional profit.
+    Precision model:
+      ASSET_PRECISION (6) = price_precision + amount_precision
+      price_precision: decimal places for prices (default 4)
+      amount_precision: decimal places for token amounts / q-values (default 2)
+      Trade value = |amount| * price is exact at ASSET_PRECISION — no rounding.
+
+    q: LMSR quantities sold per outcome (amount_precision)
+    positions: tokens held per account per outcome (amount_precision)
+
+    Conditional profits (from position closes) are tracked as per-account
+    locks with lock_type="conditional_profit". Both traders and the AMM
+    can accumulate conditional profit via PnL transfers.
     """
     id: int
     amm_account_id: int
@@ -276,7 +290,8 @@ class Market:
     category: str                              # "pr_merge", etc.
     category_id: str                           # "futarchy-fi/agents#1", etc.
     question: str
-    precision: int = 4                         # decimal places for prices/amounts
+    price_precision: int = 4                   # decimal places for prices
+    amount_precision: int = 2                  # decimal places for token amounts (q-values)
     status: str = "open"                       # "open", "resolved", "void"
     outcomes: list[str] = field(default_factory=lambda: ["yes", "no"])
     resolution: Optional[str] = None           # winning outcome
@@ -292,7 +307,8 @@ class Market:
     @staticmethod
     def new(question: str, category: str, category_id: str,
             metadata: dict, amm_account_id: int,
-            b: Decimal = Decimal("100"), precision: int = 4,
+            b: Decimal = Decimal("100"),
+            price_precision: int = 4, amount_precision: int = 2,
             outcomes: list[str] = None,
             deadline: Optional[str] = None) -> "Market":
         outcomes = outcomes or ["yes", "no"]
@@ -303,7 +319,8 @@ class Market:
             category=category,
             category_id=category_id,
             question=question,
-            precision=precision,
+            price_precision=price_precision,
+            amount_precision=amount_precision,
             outcomes=outcomes,
             metadata=metadata,
             b=b,
@@ -312,10 +329,10 @@ class Market:
         )
 
     def quantize_price(self, price: Decimal) -> Decimal:
-        return price.quantize(Decimal(10) ** -self.precision)
+        return price.quantize(Decimal(10) ** -self.price_precision)
 
     def quantize_amount(self, amount: Decimal) -> Decimal:
-        return amount.quantize(Decimal(10) ** -self.precision)
+        return amount.quantize(Decimal(10) ** -self.amount_precision)
 
     def position(self, account_id: int) -> dict[str, Decimal]:
         return self.positions.get(account_id,
