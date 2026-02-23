@@ -78,6 +78,26 @@ def cost_to_buy(q: dict[str, Decimal], b: Decimal,
     return cost(q_after, b) - cost(q, b)
 
 
+def amount_for_cost(q: dict[str, Decimal], b: Decimal,
+                    outcome: str, budget: Decimal) -> Decimal:
+    """
+    Inverse of cost_to_buy. Given a credit budget, how many tokens
+    can you buy?
+
+    amount = b * ln(S * (e^(budget/b) - 1) / e_o + 1)
+
+    where S = Σ e^(q_i/b) and e_o = e^(q_outcome/b).
+
+    Positive budget → tokens you can buy.
+    Negative budget → tokens you must sell to receive that many credits.
+    """
+    qn = _normalize(q)
+    S = sum(Decimal(str(math.exp(float(v / b)))) for v in qn.values())
+    e_o = Decimal(str(math.exp(float(qn[outcome] / b))))
+    inner = S * (Decimal(str(math.exp(float(budget / b)))) - 1) / e_o + 1
+    return b * Decimal(str(math.log(float(inner))))
+
+
 def cost_to_move_price(q: dict[str, Decimal], b: Decimal,
                        outcome: str, target_price: Decimal) -> tuple[Decimal, Decimal]:
     """
@@ -131,6 +151,23 @@ def liquidity_cost(q: dict[str, Decimal], b: Decimal,
     new_q = {k: v * ratio for k, v in q.items()}
     funding = (new_b - b) * Decimal(str(math.log(float(_exp_sum(q, b)))))
     return new_q, funding
+
+
+def b_for_funding(q: dict[str, Decimal], b: Decimal,
+                  funding: Decimal) -> tuple[Decimal, dict[str, Decimal]]:
+    """
+    Inverse of liquidity_cost. Given additional funding, what's the new b?
+
+    new_b = b + funding / ln(Σ e^(q_i / b))
+
+    Returns (new_b, new_q) with q rescaled to preserve prices.
+    Positive funding → increase liquidity. Negative → decrease.
+    """
+    log_S = Decimal(str(math.log(float(_exp_sum(q, b)))))
+    new_b = b + funding / log_S
+    ratio = new_b / b
+    new_q = {k: v * ratio for k, v in q.items()}
+    return new_b, new_q
 
 
 def max_loss(b: Decimal, n: int) -> Decimal:
