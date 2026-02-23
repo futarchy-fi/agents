@@ -35,14 +35,22 @@ def _id() -> str:
 
 @dataclass
 class Lock:
-    """Credits locked in a market. The risk engine's receipt."""
+    """
+    Credits locked for a reason. The risk engine's receipt.
+
+    lock_type: why it's locked — "position" (market trade),
+               "limit_order" (pending order), etc.
+    """
     lock_id: str
     market_id: str
-    amount: float  # always positive
+    amount: float       # always positive
+    lock_type: str       # "position", "limit_order", etc.
 
     @staticmethod
-    def new(market_id: str, amount: float) -> "Lock":
-        return Lock(lock_id=_id(), market_id=market_id, amount=amount)
+    def new(market_id: str, amount: float,
+            lock_type: str = "position") -> "Lock":
+        return Lock(lock_id=_id(), market_id=market_id,
+                    amount=amount, lock_type=lock_type)
 
 
 @dataclass
