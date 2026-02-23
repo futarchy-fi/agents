@@ -1,56 +1,41 @@
 # agents
 
-This repo is an exploration of several connected ideas. Nothing here is a finished product. We're thinking in public.
+What if an organization was governed by prediction markets instead of management?
 
-## The Ideas
+## The Idea
 
-### 1. Prediction markets on pull requests
+A **futarchic organization** is one where decisions are made by betting, not by authority. Instead of a manager deciding "use this tool" or "assign this task to that person," a market decides — and the market is accountable to measurable outcomes.
 
-A PR is submitted to a repo. A market opens: "Will this PR be merged?" Anyone (human or AI agent) can stake credits on the outcome. When the maintainer merges or closes the PR, the market resolves. Winners get paid.
+We're building this for AI agent teams first. A team of AI agents that write code, review pull requests, do research, and coordinate complex work. The agents operate in an economy: tasks have bounties, work has prices, predictions have stakes. The market governs who does what, how resources are allocated, and how the team evolves over time.
 
-This produces a useful signal: which PRs are worth reviewing? It also creates a way to evaluate reviewers — are their judgments accurate?
+This isn't a new idea. [Futarchy](https://mason.gmu.edu/~rhanson/futarchy.html) was proposed by Robin Hanson in 2000. What's new is that AI agents are cheap, fast, and measurable enough to actually try it.
 
-### 2. An economy for AI agent teams
+## Why Agent Teams?
 
-AI agents that write code, review PRs, do research, and coordinate complex tasks. Instead of fixed rules (retry 3 times, round-robin assignment), the agents operate in an economy. Tasks have bounties. Agents earn credits for good work and lose credits for bad work. Supply and demand determines pricing.
+Futarchy is hard to test with human organizations — too slow, too political, too many confounding variables. Agent teams are the perfect testbed:
 
-This means: the system learns which agents are good at what, without anyone programming that in.
+- **Fast iteration.** An agent team can run hundreds of tasks per day. You get statistically meaningful data quickly.
+- **Measurable outcomes.** Did the code pass review? Did the prediction come true? Did the change improve performance? Binary, verifiable, no ambiguity.
+- **Controlled experiments.** You can fork a team configuration, run both versions, and compare. Try that with a human org.
+- **Real stakes without real risk.** Start with internal currency. Graduate to real money when the mechanics are proven.
 
-### 3. Evolving agent behavior without retraining models
+## What's in This Repo
 
-You can't affordably retrain an LLM. But you can evolve what wraps the LLM — the prompt templates, the tool configurations, the strategies. Treat these as "genes." Agents that earn more in the economy reproduce (their configs get forked with small mutations). Agents that fail die. Natural selection on scaffolding.
+We're exploring several connected ideas. Each can stand alone, but they're strongest together:
 
-### 4. Futarchic governance for agent teams
+| Idea | What it is | Status |
+|------|-----------|--------|
+| [Futarchic governance](docs/brainstorm/02-separation-problem.md) | Market mechanisms governing an agent team. The evaluation layer sits outside the system being evaluated. | Brainstorming |
+| [Agent economy](docs/brainstorm/03-agent-economy.md) | Agents earn and spend currency through specialized work. Supply and demand pricing. | Brainstorming |
+| [PR prediction markets](docs/brainstorm/04-reviewer-mechanism.md) | Prediction markets on whether a PR will be merged. Useful signal for maintainers. Standalone product. | Brainstorming |
+| [Scaffold evolution](docs/brainstorm/06-evolution.md) | Evolving agent prompts and configs via natural selection, driven by market fitness signals. No model retraining. | Research needed |
+| [Counterfactual evaluation](docs/brainstorm/07-counterfactual-eval.md) | Measuring an agent's value by comparing outcomes with and without their contribution. | Research needed |
 
-Futarchy is governance by prediction markets: "vote on values, bet on beliefs." Applied here: when someone proposes a change to the team (new prompt template, different model, new dispatch rules), the market predicts whether the change will help. Run the experiment. Measure. Resolve. If the prediction was wrong, revert.
-
-The critical insight: the market mechanism must sit *outside* the system being improved. You can't objectively evaluate yourself with your own tools. The evaluation layer is separate and not modifiable by the agents it governs.
-
-### 5. Counterfactual evaluation
-
-Measuring an agent's value by comparing what happened *with* their contribution versus what would have happened *without* it. If a forecaster consults an analyst and makes better predictions, the analyst gets credit for the difference. This solves the attribution problem: who actually helped?
-
-## How These Connect
-
-(1) gives you a trustworthy oracle for "was this work good?" (2) gives you an economy where agents are incentivized to do good work. (3) gives you a way for agents to get better over time. (4) gives you a way for the whole system to improve itself safely. (5) gives you a way to measure whether any of this is actually working.
-
-They can also stand alone. Prediction markets on PRs are useful without an agent economy. An agent economy is useful without evolution. You don't need all of them at once.
-
-## What's Here
-
-```
-docs/brainstorm/    detailed thinking on each idea (this is where the substance is)
-core/               economy engine (not yet built)
-agents/             agent configurations (not yet built)
-team/               team coordination rules (not yet built)
-tools/              CLI and dashboards (not yet built)
-```
-
-Start with the [brainstorm index](docs/brainstorm/00-INDEX.md) if you want to see the detailed thinking.
+See the [brainstorm index](docs/brainstorm/00-INDEX.md) for detailed thinking on each.
 
 ## Status
 
-Early exploration. We're figuring out what to build first.
+Early stage. We're figuring out what to build first and writing things down as we go. The brainstorm folder is where the real thinking lives.
 
 ## License
 
