@@ -9,6 +9,10 @@ It just knows: accounts have available and frozen balances, and
 frozen balances are itemized as locks.
 
 Invariant: account.frozen_balance == sum(lock.amount for lock in account.locks)
+
+The risk engine stores Decimal amounts at full precision. It never
+rounds or quantizes — that is the market engine's responsibility when
+computing costs and revenues.
 """
 
 from decimal import Decimal
@@ -48,7 +52,6 @@ class RiskEngine:
     def mint(self, account_id: int, amount: Decimal) -> Transaction:
         """Create credits from nothing. The only way money enters."""
         acc = self.get_account(account_id)
-        amount = quantize(amount)
         acc.available_balance += amount
         tx = Transaction.new(
             account_id=account_id,
@@ -71,7 +74,6 @@ class RiskEngine:
         Raises InsufficientBalance if not enough available.
         """
         acc = self.get_account(account_id)
-        amount = quantize(amount)
         if acc.available_balance < amount:
             raise InsufficientBalance(
                 f"account {account_id}: need {amount}, "
@@ -101,7 +103,6 @@ class RiskEngine:
         """
         lk = self._find_lock(lock_id)
         acc = self.get_account(lk.account_id)
-        amount = quantize(amount)
         if acc.available_balance < amount:
             raise InsufficientBalance(
                 f"account {lk.account_id}: need {amount}, "
@@ -130,7 +131,6 @@ class RiskEngine:
         """
         lk = self._find_lock(lock_id)
         acc = self.get_account(lk.account_id)
-        amount = quantize(amount)
         if amount > lk.amount:
             raise ValueError(
                 f"lock {lock_id}: can't decrease by {amount}, "
@@ -168,7 +168,6 @@ class RiskEngine:
         """
         lk = self._find_lock(lock_id)
         acc = self.get_account(lk.account_id)
-        payout = quantize(payout)
         frozen_released = lk.amount
         acc.frozen_balance -= frozen_released
         acc.available_balance += payout
@@ -191,7 +190,7 @@ class RiskEngine:
 
     def check_available(self, account_id: int, amount: Decimal) -> bool:
         acc = self.get_account(account_id)
-        return acc.available_balance >= quantize(amount)
+        return acc.available_balance >= amount
 
     def total_minted(self) -> Decimal:
         """Sum of all mint transactions. The total money in the system."""

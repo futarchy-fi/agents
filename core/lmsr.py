@@ -72,10 +72,21 @@ def cost_to_buy(q: dict[str, Decimal], b: Decimal,
 
     Returns positive Decimal (cost to the buyer).
     For selling, pass negative amount — returns negative (credit back).
+
+    Uses a shared normalization offset so the difference is exact.
     """
     q_after = dict(q)
     q_after[outcome] = q_after[outcome] + amount
-    return cost(q_after, b) - cost(q, b)
+    # Use the same normalization for both states to avoid the offset bug.
+    # min(q) may differ from min(q_after), but if we normalize both by the
+    # SAME offset, the difference C(after) - C(before) is correct.
+    m = min(min(q.values()), min(q_after.values()))
+    qn_before = {k: v - m for k, v in q.items()}
+    qn_after = {k: v - m for k, v in q_after.items()}
+    es_before = sum(Decimal(str(math.exp(float(v / b)))) for v in qn_before.values())
+    es_after = sum(Decimal(str(math.exp(float(v / b)))) for v in qn_after.values())
+    return b * (Decimal(str(math.log(float(es_after)))) -
+                Decimal(str(math.log(float(es_before)))))
 
 
 def amount_for_cost(q: dict[str, Decimal], b: Decimal,

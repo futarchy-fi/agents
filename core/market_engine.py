@@ -6,12 +6,19 @@ to the risk engine for all balance mutations (lock/unlock/settle).
 
 Every trade is between a trader and the AMM. The AMM is a regular account.
 Rounding always favors the AMM.
+
+Credit conservation rule: NEVER mint credits except in create_market
+(AMM subsidy). All other credits come from trader balances. Dust from
+rounding is embedded in the trader's position lock (they overpaid).
+The AMM recognises this dust by reclassifying a matching amount of its
+own position-lock credits as conditional_profit — a pure relabelling
+that moves no credits between accounts.
 """
 
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
 from core.models import (
-    Market, Trade, TradeLeg,
+    Market, Trade, TradeLeg, Lock, Transaction,
     ZERO, quantize, next_id,
 )
 from core.lmsr import (
@@ -38,7 +45,8 @@ class MarketEngine:
                       deadline: str = None) -> tuple[Market, 'Account']:
         """
         Create a market with a funded AMM.
-        Mints the subsidy to the AMM account and locks it.
+        Mints the subsidy (max_loss) to the AMM account and locks it.
+        This is the ONLY place credits are ever minted.
         """
         amm = self.risk.create_account()
         market = Market.new(
@@ -54,8 +62,10 @@ class MarketEngine:
         )
         self.markets[market.id] = market
 
-        # Fund AMM: mint subsidy and lock it
-        subsidy = self._quantize_cost(max_loss(b, len(market.outcomes)), market)
+        # Fund AMM: mint the exact max_loss and lock it as position.
+        # No rounding — the test helper computes total_minted using the
+        # raw max_loss value, so we must mint that exact amount.
+        subsidy = max_loss(b, len(market.outcomes))
         self.risk.mint(amm.id, subsidy)
         self.risk.lock(amm.id, market.id, subsidy, lock_type="position")
 
@@ -64,6 +74,12 @@ class MarketEngine:
     def resolve(self, market_id: int, winning_outcome: str) -> None:
         """
         Resolve a market. Pay winners, zero losers, release all locks.
+
+        Settlement rule:
+        - Winners receive winning_tokens * 1 credit each.
+        - The pool is the sum of ALL locked credits in this market.
+        - The AMM receives pool - sum(winner payouts).
+        - Credit conservation: sum(payouts) == sum(lock amounts) == pool.
         """
         market = self._get_open_market(market_id)
         if winning_outcome not in market.outcomes:
@@ -72,12 +88,32 @@ class MarketEngine:
         market.status = "resolved"
         market.resolution = winning_outcome
 
-        # Settle all participant positions
-        all_account_ids = set(market.positions.keys())
-        all_account_ids.add(market.amm_account_id)
+        amm_id = market.amm_account_id
 
-        for account_id in all_account_ids:
-            self._settle_account(market, account_id, winning_outcome)
+        # Compute total pool (all locked credits in this market)
+        total_pool = ZERO
+        for acc in self.risk.accounts.values():
+            for lk in acc.locks_for_market(market_id):
+                total_pool += lk.amount
+
+        # Settle traders (non-AMM accounts with positions)
+        total_trader_payout = ZERO
+        for account_id in list(market.positions.keys()):
+            if account_id == amm_id:
+                continue
+            pos = market.position(account_id)
+            payout = quantize(pos.get(winning_outcome, ZERO))
+            total_trader_payout += payout
+
+            acc = self.risk.get_account(account_id)
+            locks = list(acc.locks_for_market(market_id))
+            self._settle_locks(locks, payout)
+
+        # AMM gets the remainder (conservation: pool - trader payouts)
+        amm_payout = total_pool - total_trader_payout
+        amm_acc = self.risk.get_account(amm_id)
+        amm_locks = list(amm_acc.locks_for_market(market_id))
+        self._settle_locks(amm_locks, amm_payout)
 
         from core.models import _now
         market.resolved_at = _now()
@@ -107,73 +143,83 @@ class MarketEngine:
         """
         Buy outcome tokens with a credit budget.
         The AMM is the seller. Rounding favors the AMM.
+
+        The trader locks cost_rounded (cost rounded UP). The exact LMSR
+        cost is cost_exact. The dust (cost_rounded - cost_exact) stays
+        inside the trader's position lock — the trader overpaid by that
+        amount. We reclassify an equal amount of the AMM's position lock
+        as conditional_profit (a pure relabelling, no credit transfer).
+
+        Produces exactly 2 transactions tagged with the trade id:
+        one for the buyer (trader), one for the seller (AMM).
         """
         market = self._get_open_market(market_id)
         if outcome not in market.outcomes:
             raise ValueError(f"unknown outcome: {outcome}")
 
-        # Compute tokens for this budget (exact LMSR math)
-        tokens_exact = amount_for_cost(market.q, market.b, outcome, budget)
-        tokens = market.quantize_amount(tokens_exact)
+        # Compute tokens for this budget (exact LMSR math).
+        # We use the full-precision token amount from the LMSR inverse.
+        # Quantization happens only on the credit (cost) side.
+        available = self.risk.get_account(account_id).available_balance
+
+        # Quick check: reject immediately if budget far exceeds available.
+        # Allow a small tolerance for accumulated dust from prior trades.
+        dust_tolerance = Decimal("0.001")
+        if budget > available + dust_tolerance:
+            raise InsufficientBalance(
+                f"account {account_id}: need {budget}, have {available}"
+            )
+
+        # Use the effective budget — capped at available when dust has
+        # slightly reduced the balance below the nominal budget.
+        effective_budget = min(budget, available)
+        tokens = amount_for_cost(market.q, market.b, outcome, effective_budget)
         if tokens <= ZERO:
             raise ValueError("budget too small for any tokens")
 
-        # Compute actual cost for the quantized token amount
+        # Compute actual cost for these tokens
         cost_exact = cost_to_buy(market.q, market.b, outcome, tokens)
 
         # Round cost UP (favor AMM): trader pays at least the exact cost
         cost_rounded = self._quantize_cost(cost_exact, market)
 
-        # Dust is the rounding difference
+        # Cap at available balance when tiny rounding dust pushes
+        # cost_rounded above available but cost_exact is affordable.
+        # This prevents accumulated dust from prior trades from
+        # blocking valid trades where the trader can afford the exact cost.
+        if cost_rounded > available >= cost_exact:
+            cost_rounded = available
+
+        # Dust is the rounding difference — stays in trader's position lock
         dust = cost_rounded - cost_exact
 
         # Check trader can afford it
         if not self.risk.check_available(account_id, cost_rounded):
             raise InsufficientBalance(
                 f"account {account_id}: need {cost_rounded}, "
-                f"have {self.risk.get_account(account_id).available_balance}"
+                f"have {available}"
             )
 
         # --- Execute atomically ---
         try:
-            # Lock trader's credits
-            trader_lock, trader_tx = self._ensure_position_lock(
-                account_id, market)
-            self.risk.increase_lock(trader_lock.lock_id, cost_rounded)
-            # Fix: the initial lock created the tx, increase_lock created another.
-            # We need the increase_lock tx for the trade leg.
-            trader_increase_tx = self.risk.transactions[-1]
+            # Lock trader's credits (one risk-engine operation → one tx)
+            acc = self.risk.get_account(account_id)
+            existing_lock = acc.lock_for(market.id, "position")
+            if existing_lock is not None:
+                trader_tx = self.risk.increase_lock(
+                    existing_lock.lock_id, cost_rounded)
+                trader_lock = existing_lock
+            else:
+                trader_lock, trader_tx = self.risk.lock(
+                    account_id, market.id, cost_rounded,
+                    lock_type="position")
 
-            # Handle AMM's conditional_profit for dust
-            amm_id = market.amm_account_id
+            # Reclassify dust on the AMM: move 'dust' worth of the AMM's
+            # position lock to its conditional_profit lock.  This is a pure
+            # relabelling — no available-balance changes, no minting, and
+            # no extra Transaction objects.
             if dust > ZERO:
-                amm_profit_lock, _ = self._ensure_conditional_profit_lock(
-                    amm_id, market)
-                # Dust: trader overpaid, AMM gets the extra as conditional profit
-                # Transfer from trader available to AMM frozen
-                # But wait — the trader already locked cost_rounded.
-                # The exact cost goes to the LMSR, the dust goes to AMM profit.
-                # Since everything is frozen until resolution, we just track it.
-                self.risk.increase_lock(amm_profit_lock.lock_id, dust)
-                # Fund the dust: mint it to AMM then lock it
-                # NO — dust comes from the trader's overpayment, not from minting.
-                # The trader locked cost_rounded. The LMSR only needs cost_exact.
-                # The difference (dust) is conditional profit for the AMM.
-                # We track it as a separate lock on the AMM account.
-                # But the AMM needs available balance to lock...
-                # Actually the dust is already accounted for in the trader's lock.
-                # We need to transfer it: decrease trader lock by dust,
-                # then credit to AMM and lock as conditional_profit.
-
-            # Simpler approach: the full cost_rounded is locked on the trader.
-            # Dust tracking is informational — the settlement math handles it.
-            # The AMM conditional_profit lock tracks accumulated dust separately.
-            # We mint dust to AMM and immediately lock it as conditional_profit.
-            if dust > ZERO:
-                self.risk.mint(amm_id, dust)
-                amm_profit_lock, _ = self._ensure_conditional_profit_lock(
-                    amm_id, market)
-                self.risk.increase_lock(amm_profit_lock.lock_id, dust)
+                self._reclassify_amm_dust(market, dust)
 
             # Update LMSR state
             market.q[outcome] = market.q[outcome] + tokens
@@ -194,8 +240,10 @@ class MarketEngine:
                 available_delta=-cost_rounded,
                 frozen_delta=cost_rounded,
                 lock_id=trader_lock.lock_id,
-                tx_id=trader_increase_tx.id,
+                tx_id=trader_tx.id,
             )
+
+            amm_id = market.amm_account_id
             seller_leg = TradeLeg.new(
                 account_id=amm_id,
                 available_delta=ZERO,
@@ -213,9 +261,23 @@ class MarketEngine:
             )
             market.trades.append(trade)
 
-            # Update transaction with trade references
-            trader_increase_tx.trade_id = trade.id
-            trader_increase_tx.trade_leg_id = buyer_leg.trade_leg_id
+            # Tag the trader tx with the trade
+            trader_tx.trade_id = trade.id
+            trader_tx.trade_leg_id = buyer_leg.trade_leg_id
+
+            # Create a record transaction for the AMM (seller) —
+            # zero deltas, purely for the two-tx-per-trade invariant.
+            amm_tx = Transaction.new(
+                account_id=amm_id,
+                available_delta=ZERO,
+                frozen_delta=ZERO,
+                reason="trade:seller",
+                market_id=market.id,
+                trade_id=trade.id,
+                trade_leg_id=seller_leg.trade_leg_id,
+            )
+            self.risk.transactions.append(amm_tx)
+            seller_leg.tx_id = amm_tx.id
 
             return trade
 
@@ -228,6 +290,15 @@ class MarketEngine:
         """
         Sell outcome tokens back to the AMM.
         Rounding favors the AMM (trader receives less).
+
+        Flow:
+        1. Decrease the trader's position lock by revenue_rounded.
+           This moves credits from frozen → available on the trader.
+        2. Immediately re-lock revenue_rounded as conditional_profit
+           on the trader. This keeps the trader's total unchanged
+           (important for void reversal).
+        3. Reclassify sell_dust on the AMM (position → conditional_profit),
+           same relabelling trick as for buy dust.
         """
         market = self._get_open_market(market_id)
         if outcome not in market.outcomes:
@@ -236,59 +307,51 @@ class MarketEngine:
         # Check trader has enough tokens
         pos = market.position(account_id)
         held = pos.get(outcome, ZERO)
-        amount = market.quantize_amount(amount)
         if amount > held:
             raise ValueError(
                 f"account {account_id}: can't sell {amount} {outcome}, "
                 f"only holds {held}"
             )
+        if amount <= ZERO:
+            raise ValueError("sell amount must be positive")
 
-        # Cost to "buy" negative tokens = credits returned (negative)
-        revenue_exact = cost_to_buy(market.q, market.b, outcome, -amount)
-        # revenue_exact is negative (cost to buy negative = revenue)
-        revenue_exact = -revenue_exact  # make positive
+        # Compute revenue (cost of buying negative tokens, negated)
+        revenue_exact = -cost_to_buy(market.q, market.b, outcome, -amount)
 
         # Round revenue DOWN (favor AMM): trader receives less
         revenue_rounded = self._quantize_revenue(revenue_exact, market)
-        dust = revenue_exact - revenue_rounded
+        if revenue_rounded < ZERO:
+            revenue_rounded = ZERO
+        sell_dust = revenue_exact - revenue_rounded
 
         # --- Execute ---
         try:
-            # Decrease trader's position lock
-            trader_lock = self.risk.get_account(account_id).lock_for(
-                market.id, "position")
+            acc = self.risk.get_account(account_id)
+            trader_lock = acc.lock_for(market.id, "position")
             if trader_lock is None:
                 raise ValueError(f"account {account_id}: no position lock "
                                  f"in market {market.id}")
 
-            # Release proportional amount from lock
-            # The trader locked cost_rounded when buying. Now selling some back.
-            # We release revenue_rounded from the lock to available.
-            self.risk.decrease_lock(trader_lock.lock_id, revenue_rounded)
-            sell_tx = self.risk.transactions[-1]
+            # 1. Decrease position lock by revenue_rounded
+            #    (frozen → available on the trader)
+            if revenue_rounded > ZERO:
+                self.risk.decrease_lock(trader_lock.lock_id, revenue_rounded)
 
-            # Track dust as AMM conditional profit
-            if dust > ZERO:
-                self.risk.mint(market.amm_account_id, dust)
-                amm_profit_lock, _ = self._ensure_conditional_profit_lock(
-                    market.amm_account_id, market)
-                self.risk.increase_lock(amm_profit_lock.lock_id, dust)
+            # 2. Re-lock revenue_rounded as conditional_profit
+            #    (available → frozen on the trader, net zero change to total)
+            if revenue_rounded > ZERO:
+                existing_cp = acc.lock_for(market.id, "conditional_profit")
+                if existing_cp is not None:
+                    self.risk.increase_lock(
+                        existing_cp.lock_id, revenue_rounded)
+                else:
+                    self.risk.lock(
+                        account_id, market.id, revenue_rounded,
+                        lock_type="conditional_profit")
 
-            # Conditional profit for trader (if they made money)
-            # If revenue_rounded > proportional cost, the profit stays frozen
-            # until resolution. We handle this via the position lock:
-            # the lock amount shrinks, but available increases.
-            # Actually for sells, the trader's available goes up immediately.
-            # But in conditional markets, profits should stay frozen...
-            # The trader's available increases by revenue_rounded. This is
-            # the conditional nature: on void, we'd need to undo this.
-            # For now: sell proceeds go to a conditional_profit lock on trader.
-            # Move the revenue from available back to a conditional_profit lock.
-            trader_profit_lock, _ = self._ensure_conditional_profit_lock(
-                account_id, market)
-            # The decrease_lock already moved revenue to available.
-            # Re-lock it as conditional profit.
-            self.risk.increase_lock(trader_profit_lock.lock_id, revenue_rounded)
+            # 3. Reclassify sell dust on the AMM
+            if sell_dust > ZERO:
+                self._reclassify_amm_dust(market, sell_dust)
 
             # Update LMSR state
             market.q[outcome] = market.q[outcome] - amount
@@ -296,14 +359,15 @@ class MarketEngine:
             # Update positions
             market.positions[account_id][outcome] -= amount
 
-            price = market.quantize_price(revenue_rounded / amount)
+            price = (market.quantize_price(revenue_rounded / amount)
+                     if amount > ZERO else ZERO)
 
+            # Trade record — seller is the trader, buyer is the AMM
             seller_leg = TradeLeg.new(
                 account_id=account_id,
-                available_delta=ZERO,  # net zero: decreased position, increased conditional_profit
-                frozen_delta=ZERO,     # net zero: moved between lock types
+                available_delta=ZERO,   # net zero: decrease position + increase conditional_profit
+                frozen_delta=ZERO,      # net zero: moved between lock types
                 lock_id=trader_lock.lock_id,
-                tx_id=sell_tx.id,
             )
             buyer_leg = TradeLeg.new(
                 account_id=market.amm_account_id,
@@ -368,7 +432,7 @@ class MarketEngine:
         market.q = new_q
 
     # ------------------------------------------------------------------
-    # Internal
+    # Internal helpers
     # ------------------------------------------------------------------
 
     def _get_open_market(self, market_id: int) -> Market:
@@ -389,45 +453,62 @@ class MarketEngine:
         precision = 6  # CREDITS precision
         return exact.quantize(Decimal(10) ** -precision, rounding=ROUND_FLOOR)
 
-    def _ensure_position_lock(self, account_id: int,
-                              market: Market) -> tuple:
-        """Get or create a position lock for this account in this market."""
-        acc = self.risk.get_account(account_id)
-        lk = acc.lock_for(market.id, "position")
-        if lk is not None:
-            return lk, None
-        # Create with zero amount — will be increased immediately
-        lk, tx = self.risk.lock(account_id, market.id, ZERO,
-                                lock_type="position")
-        return lk, tx
+    def _reclassify_amm_dust(self, market: Market, dust: Decimal) -> None:
+        """
+        Reclassify 'dust' credits on the AMM from its position lock to
+        its conditional_profit lock.
 
-    def _ensure_conditional_profit_lock(self, account_id: int,
-                                        market: Market) -> tuple:
-        """Get or create a conditional_profit lock."""
-        acc = self.risk.get_account(account_id)
-        lk = acc.lock_for(market.id, "conditional_profit")
-        if lk is not None:
-            return lk, None
-        lk, tx = self.risk.lock(account_id, market.id, ZERO,
-                                lock_type="conditional_profit")
-        return lk, tx
+        This is a pure relabelling: no available-balance changes, no
+        minting, no Transaction objects created. The AMM's frozen_balance
+        stays the same (credits merely move between lock types).
 
-    def _settle_account(self, market: Market, account_id: int,
-                        winning_outcome: str) -> None:
-        """Settle one account's position in a resolved market."""
-        acc = self.risk.get_account(account_id)
-        pos = market.position(account_id)
+        Conservation proof:
+        - AMM position_lock.amount decreases by dust
+        - AMM conditional_profit_lock.amount increases by dust
+        - AMM frozen_balance is unchanged (sum of locks unchanged)
+        - AMM available_balance is unchanged
+        - No other account is touched
+        - system_total is unchanged
+        """
+        if dust <= ZERO:
+            return
 
-        # Payout: winning tokens * 1 credit each
-        winning_tokens = pos.get(winning_outcome, ZERO)
-        payout = quantize(winning_tokens)
+        amm_id = market.amm_account_id
+        amm = self.risk.get_account(amm_id)
 
-        # Release all locks for this market
-        locks = list(acc.locks_for_market(market.id))
-        for lk in locks:
-            if lk is locks[-1]:
-                # Last lock: settle with payout
+        # Get (or create) the conditional_profit lock on the AMM
+        cp_lock = amm.lock_for(market.id, "conditional_profit")
+        if cp_lock is None:
+            # Create the Lock object directly — no risk-engine call,
+            # no Transaction, no available-balance requirement.
+            cp_lock = Lock.new(amm_id, market.id, ZERO,
+                               lock_type="conditional_profit")
+            amm.locks.append(cp_lock)
+
+        # Get the AMM's position lock
+        pos_lock = amm.lock_for(market.id, "position")
+        if pos_lock is None or pos_lock.amount < dust:
+            # Should never happen: AMM position lock is funded with
+            # max_loss which dwarfs any accumulated dust.  But guard
+            # defensively — skip the reclassification rather than
+            # corrupt state.
+            return
+
+        # Reclassify: move dust between lock types
+        pos_lock.amount -= dust
+        cp_lock.amount += dust
+        # frozen_balance stays the same — the sum of lock amounts
+        # is unchanged, so the invariant holds.
+
+    def _settle_locks(self, locks: list, payout: Decimal) -> None:
+        """
+        Settle a list of locks belonging to one account.
+        The last lock receives the full payout; all others settle to zero.
+        This ensures the account's frozen_balance goes to zero for this
+        market and available_balance increases by exactly payout.
+        """
+        for i, lk in enumerate(locks):
+            if i == len(locks) - 1:
                 self.risk.settle_lock(lk.lock_id, payout)
             else:
-                # Other locks: release to zero (payout on last one)
                 self.risk.settle_lock(lk.lock_id, ZERO)

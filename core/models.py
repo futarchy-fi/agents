@@ -102,7 +102,7 @@ class Lock:
             lock_id=next_id("lock"),
             account_id=account_id,
             market_id=market_id,
-            amount=quantize(amount),
+            amount=amount,
             lock_type=lock_type,
         )
 
@@ -125,7 +125,7 @@ class Account:
     @staticmethod
     def new(available_balance: Decimal = ZERO) -> "Account":
         return Account(id=next_id("account"),
-                       available_balance=quantize(available_balance))
+                       available_balance=available_balance)
 
     @property
     def total(self) -> Decimal:
@@ -180,8 +180,8 @@ class Transaction:
         return Transaction(
             id=next_id("tx"),
             account_id=account_id,
-            available_delta=quantize(available_delta),
-            frozen_delta=quantize(frozen_delta),
+            available_delta=available_delta,
+            frozen_delta=frozen_delta,
             reason=reason,
             market_id=market_id,
             trade_id=trade_id,
@@ -217,8 +217,8 @@ class TradeLeg:
         return TradeLeg(
             trade_leg_id=next_id("trade_leg"),
             account_id=account_id,
-            available_delta=quantize(available_delta),
-            frozen_delta=quantize(frozen_delta),
+            available_delta=available_delta,
+            frozen_delta=frozen_delta,
             lock_id=lock_id,
             tx_id=tx_id,
         )
