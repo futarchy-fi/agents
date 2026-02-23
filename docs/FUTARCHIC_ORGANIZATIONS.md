@@ -41,26 +41,20 @@ This is also a testbed for futarchy itself. If it works for agent teams — fast
 
 ## Components
 
-Futarchic organizations need several things to work. Each of these is explored separately:
+Futarchic organizations need several things to work. Each is explored in the [brainstorm folder](brainstorm/00-INDEX.md).
 
-1. **A market mechanism** — prediction markets on outcomes. For PRs, this is straightforward: "will this PR be merged?" For team governance changes, it's harder. See [reviewer mechanism](brainstorm/04-reviewer-mechanism.md) and [separation problem](brainstorm/02-separation-problem.md).
+1. **Market mechanisms.** Not just prediction markets — any mechanism that produces prices reflecting collective beliefs. Asset prices, prediction markets, conditional markets, bounty auctions. The common thread: information is aggregated through trading, not through committees. See [reviewer mechanism](brainstorm/04-reviewer-mechanism.md).
 
-2. **An economy** — agents need currency to stake, earn, and spend. Specialized agents earn in different ways. See [agent economy](brainstorm/03-agent-economy.md).
+2. **An economy.** Agents need currency to stake, earn, and spend. Different agents earn in different ways — coders ship code, reviewers evaluate work, forecasters make predictions. Supply and demand determines what each agent's time is worth. See [agent economy](brainstorm/03-agent-economy.md).
 
-3. **An evolution mechanism** — the market signal needs to drive actual change. Agents whose configurations earn more should reproduce. Those that fail should be replaced. See [evolution](brainstorm/06-evolution.md).
+3. **Evolution.** Market signals need to drive actual change. Agents whose configurations earn more reproduce. Those that lose money get replaced. No model retraining — what evolves is the scaffolding (prompts, tool configs, strategies). In a permissionless system, anyone can bring their own agents and compete. See [evolution](brainstorm/06-evolution.md).
 
-4. **A measurement system** — you need to know whether things are actually getting better. Counterfactual evaluation is the principled approach. See [counterfactual eval](brainstorm/07-counterfactual-eval.md).
+4. **Measurement.** You need to know whether things are getting better. The principled approach: counterfactual evaluation. Compare outcomes with and without an agent's contribution. See [counterfactual eval](brainstorm/07-counterfactual-eval.md).
 
-5. **Real stakes** — markets without stakes are polls. Internal currency can bootstrap this, but real money (on-chain) is the endgame. See [path to market](brainstorm/08-path-to-market.md).
+5. **Real stakes.** Markets without stakes are polls. Internal currency can bootstrap this. Real money is the endgame. See [path to market](brainstorm/08-path-to-market.md).
 
-## Open Questions
+## What We Don't Know
 
-We don't know the answers to these yet:
+We think futarchic governance will produce better agent teams than hand-tuned rules. We don't have proof yet. The point of this project is to find out.
 
-- Can internal (non-real-money) markets drive meaningful improvement?
-- What does the minimum viable market mechanism look like?
-- How do you prevent agents from gaming the evaluation layer?
-- What's the right balance between market governance and human oversight?
-- Does this actually produce better agent teams than hand-tuned heuristics?
-
-The only way to find out is to build it and measure.
+Specific things we're still figuring out: whether internal currency creates enough pressure to drive real improvement, what the simplest useful market mechanism looks like, and how much human oversight is needed before the system earns trust to run autonomously. These are empirical questions — we'll answer them by building and measuring.
