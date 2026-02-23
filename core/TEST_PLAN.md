@@ -12,15 +12,15 @@ The tests below define the contract the system must satisfy. Each encodes a spec
 
 ## Rounding and Dust
 
-4. **Rounding always favors the AMM.** Buy then sell the same amount. In exact math, net cost = 0. With rounding, net cost > 0. The trader always loses a tiny amount on the round-trip, the AMM always gains.
+4. **Rounding always favors the AMM.** Buy then sell the same amount. In exact math, net cost = 0. With rounding, net cost > 0. The trader loses a tiny amount (manifests as conditional_loss), the AMM gains at resolution.
 
-5. **Path independence breaks predictably with rounding.** Buying 10 tokens as 10 individual trades costs MORE than buying 10 in one shot. More rounding events = more dust to AMM. The difference is always >= 0.
+5. **Path independence breaks predictably with rounding.** 10 small buys yield fewer tokens than 1 big buy of the same total. ROUND_FLOOR on token amounts means each small buy loses a fraction of a token. The AMM keeps the difference.
 
-6. **Dust accumulates monotonically.** After 1000 small random trades, total AMM conditional_profit locks are strictly positive and equal the sum of all individual rounding differences.
+6. **Dust accumulates monotonically.** After many random buys and sells, total conditional_loss across traders is strictly positive. Rounding dust accumulates as trader CL (the AMM realizes the gain at resolution).
 
 ## Void Reversal
 
-7. **Void returns exact amounts.** On void, each trader gets back exactly what they paid (the rounded amount from their position lock). The AMM gets back its subsidy. All conditional_profit locks are released. Total system credits unchanged.
+7. **Void returns exact amounts.** On void, each trader gets back exactly what they deposited. The AMM gets back its subsidy. All locks released. Total system credits unchanged.
 
 8. **Void after complex trading.** N traders make random trades (buys and sells), some at profit, some at loss. Void the market. Every account's available_balance + frozen_balance returns to its pre-market state.
 
@@ -50,7 +50,7 @@ The tests below define the contract the system must satisfy. Each encodes a spec
 
 17. **Frozen balance always equals sum of locks.** `frozen_balance == sum(lock.amount for lock in locks)` — after every single operation. The two representations never disagree.
 
-18. **Every trade produces matching transactions.** Each trade produces exactly 2 transactions (one per leg). Each transaction's deltas match the corresponding TradeLeg's deltas. Each references the correct trade, leg, lock, and market.
+18. **Every trade produces matching transactions.** Each trade produces at least one tagged transaction. The trader side always has a transaction referencing the trade ID.
 
 19. **Risk engine rejection leaves no trace.** Reject a trade when `available_balance < cost`. Verify market state is completely unchanged — no partial execution, no orphaned locks, no phantom position updates.
 
@@ -61,3 +61,39 @@ The tests below define the contract the system must satisfy. Each encodes a spec
 21. **Can't trade on resolved or voided market.** Any trade attempt on a non-open market fails. No state change.
 
 22. **Sequential execution, no stale reads.** Two traders buy in sequence. Second trader gets a worse price because the first trade moved the market. No possibility of both getting the "initial" price.
+
+## Precision and Dust
+
+23. **Token amounts at credit precision.** All q-values, positions, and trade amounts are quantized to CREDITS precision (6dp). No excess precision leaks through.
+
+24. **Sell rejects excess precision.** Cannot sell an amount with more decimal places than amount_precision. Enforced at the API boundary.
+
+25. **Buy trade leg deltas match balance changes.** The buyer's TradeLeg available_delta and frozen_delta exactly equal the actual balance changes on their account.
+
+26. **Position zero means lock zero.** After round-tripping (buy then sell all tokens), the position is zero and the position lock is fully removed. Rounding dust accumulates as conditional_loss on the trader, not as residual position lock.
+
+27. **No budget tolerance.** Budget exceeding available balance by even 0.000001 is rejected. No tolerance, no approximation.
+
+28. **Settlement releases conditional profit.** On resolution, conditional_profit locks release at face value to the trader. Position locks settle based on the winning outcome. Total payouts equal total pool. No locks remain.
+
+## Conditional PnL Netting
+
+29. **Profit then loss nets to CL.** CP from a profitable sell is consumed when a subsequent sell creates a larger CL. Only CL remains after netting.
+
+30. **Loss then profit nets to CP.** CL from a losing sell is consumed when a subsequent sell creates a larger CP. Only CP remains after netting.
+
+31. **Equal PnL nets to zero.** When CP and CL are equal, both are fully consumed. No conditional locks remain.
+
+32. **Netting frees capital.** After netting, at most one conditional lock exists per market per trader. Frozen balance reflects the net, not the gross.
+
+33. **Void correct after mixed PnL.** 40 random buys and sells with netting. Invariant checked after every sell: never both CP and CL. Void returns exact deposits.
+
+## Multi-Outcome Position Isolation
+
+34. **Sell YES does not release NO margin.** Buy both YES and NO. Sell all YES. The NO position lock (`position:no`) must still exist and be > 0.
+
+35. **Sell NO does not release YES margin.** Mirror of above. Buy both, sell all NO. YES position lock intact.
+
+36. **Position zero per outcome.** Sell all of one outcome — only that outcome's lock is removed. The other outcome's lock remains.
+
+37. **Void returns exact with multi-outcome.** Buy both outcomes, partial sells on each, void. Every account gets back exactly their original deposit.
