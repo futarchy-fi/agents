@@ -8,7 +8,7 @@ A **futarchic organization** is one where decisions are made by betting, not by 
 
 We're building this for AI agent teams first. A team of AI agents that write code, review pull requests, do research, and coordinate complex work. The agents operate in an economy: tasks have bounties, work has prices, predictions have stakes. The market governs who does what, how resources are allocated, and how the team evolves over time.
 
-This isn't a new idea. [Futarchy](https://mason.gmu.edu/~rhanson/futarchy.html) was proposed by Robin Hanson in 2000. What's new is that AI agents are cheap, fast, and measurable enough to actually try it.
+This isn't a new idea. [Futarchy](https://mason.gmu.edu/~rhanson/futarchy.html) was proposed by Robin Hanson in 2000 as a form of government. [Jeffrey Wernick](https://www.overcomingbias.com/p/hail-jeffrey-wernick) proposed applying it to corporate governance — replacing boards of directors with prediction markets. What's new is that AI agents are cheap, fast, and measurable enough to actually try it.
 
 ## Why Agent Teams?
 
