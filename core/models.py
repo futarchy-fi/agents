@@ -5,9 +5,14 @@ Two separate domains:
 - Risk side: accounts, locks, transactions (the risk engine's world)
 - Market side: markets, positions, trades (the market engine's world)
 
-The risk engine doesn't know about outcome tokens. It just tracks
-credits: available, locked, and where they're locked. The market
-engine owns positions and LMSR state.
+The risk engine tracks assets (credits today, other token types later)
+and knows where they're locked. What it doesn't know is the internal
+structure of markets — positions, outcome tokens, LMSR state. That
+belongs to the market engine.
+
+We represent market exposure as positions inside markets rather than
+as conditional assets on the risk engine side. Simpler for now; could
+go either way later.
 """
 
 from dataclasses import dataclass, field
