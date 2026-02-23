@@ -2,7 +2,9 @@
 
 ## Testing Philosophy
 
-Tests exist to catch non-obvious bugs and verify invariants. Not to pad coverage.
+We only write high-level, difficult tests. System-level invariants, conservation laws, round-trip properties, adversarial scenarios. These are the only tests that matter. If a test doesn't make you think hard about whether it should pass, it's not worth writing.
+
+No unit tests for simple functions. No testing that constructors construct or getters get. No "does this function return what I just told it to return." That's busywork, not engineering. One high-level invariant test that fuzzes 1000 random trades and verifies credit conservation catches more bugs than 50 unit tests ever will.
 
 A good test encodes a belief about the system that isn't obvious from reading the code. If a test would pass just by reading the function it exercises, it's not worth writing.
 
