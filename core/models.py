@@ -253,6 +253,10 @@ class Market:
     precision: decimal places for prices and token amounts
     q: LMSR quantities sold per outcome
     positions: tokens held per account per outcome
+    conditional_profit: accumulated rounding dust from trades.
+        Stays frozen inside the market until resolution.
+        On resolve: credited to AMM's available_balance.
+        On void: zero (dust returns to traders via lock reversal).
     """
     id: int
     amm_account_id: int
@@ -269,6 +273,7 @@ class Market:
     q: dict[str, Decimal] = field(default_factory=dict)
     positions: dict[int, dict[str, Decimal]] = field(default_factory=dict)
     trades: list[Trade] = field(default_factory=list)
+    conditional_profit: Decimal = ZERO         # accumulated rounding dust
     deadline: Optional[str] = None             # void if unresolved by then
     created_at: str = field(default_factory=_now)
     resolved_at: Optional[str] = None
