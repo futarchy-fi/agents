@@ -14,6 +14,10 @@ Detailed thinking on each idea. These are explorations, not specs. Some of this 
 - `08-path-to-market.md` — What to build first, how to get to real users
 - `09-open-questions.md` — Things we don't know yet
 
+## MVP Design
+
+- `12-mvp-design.md` — Conditional prediction markets on PRs. LMSR AMMs, risk engine / market engine separation, data models, implementation plan.
+
 ## Architecture Thinking
 
 - `10-autonomous-team-architecture.md` — How an autonomous agent team might work (task model, coordination layers, agent tiers). Speculative — this is brainstorming, not a roadmap.
