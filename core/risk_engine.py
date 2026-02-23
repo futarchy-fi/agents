@@ -185,6 +185,101 @@ class RiskEngine:
         return tx
 
     # ------------------------------------------------------------------
+    # Transfers
+    # ------------------------------------------------------------------
+
+    def transfer_available(self, from_account_id: int, to_account_id: int,
+                           amount: Decimal, market_id: int = None,
+                           reason: str = "transfer") -> tuple[Transaction, Transaction]:
+        """
+        Transfer credits between accounts' available balances.
+        Produces two transactions: one debit, one credit.
+        """
+        from_acc = self.get_account(from_account_id)
+        to_acc = self.get_account(to_account_id)
+        if from_acc.available_balance < amount:
+            raise InsufficientBalance(
+                f"account {from_account_id}: need {amount}, "
+                f"have {from_acc.available_balance} available"
+            )
+        from_acc.available_balance -= amount
+        to_acc.available_balance += amount
+        tx_from = Transaction.new(
+            account_id=from_account_id,
+            available_delta=-amount,
+            frozen_delta=ZERO,
+            reason=f"{reason}:out",
+            market_id=market_id,
+        )
+        tx_to = Transaction.new(
+            account_id=to_account_id,
+            available_delta=amount,
+            frozen_delta=ZERO,
+            reason=f"{reason}:in",
+            market_id=market_id,
+        )
+        self.transactions.extend([tx_from, tx_to])
+        return tx_from, tx_to
+
+    def transfer_frozen(self, from_lock_id: int, to_account_id: int,
+                        amount: Decimal, market_id: int,
+                        to_lock_type: str = "conditional_profit",
+                        reason: str = "dust_transfer") -> tuple[Transaction, Transaction]:
+        """
+        Transfer credits between accounts, frozen-to-frozen.
+
+        Decreases from_lock by amount, increases (or creates) a lock of
+        to_lock_type on to_account. Both frozen_balances adjust. Neither
+        account's available_balance changes. System total unchanged.
+
+        Produces two transactions: one debit, one credit.
+        """
+        from_lock = self._find_lock(from_lock_id)
+        from_acc = self.get_account(from_lock.account_id)
+        to_acc = self.get_account(to_account_id)
+
+        if amount > from_lock.amount:
+            raise ValueError(
+                f"lock {from_lock_id}: can't transfer {amount}, "
+                f"only {from_lock.amount} locked"
+            )
+
+        # Decrease source lock
+        from_lock.amount -= amount
+        from_acc.frozen_balance -= amount
+        if from_lock.amount == ZERO:
+            from_acc.locks.remove(from_lock)
+
+        # Increase destination lock
+        to_lock = to_acc.lock_for(market_id, to_lock_type)
+        if to_lock is not None:
+            to_lock.amount += amount
+        else:
+            to_lock = Lock.new(to_account_id, market_id, amount,
+                               lock_type=to_lock_type)
+            to_acc.locks.append(to_lock)
+        to_acc.frozen_balance += amount
+
+        tx_from = Transaction.new(
+            account_id=from_lock.account_id,
+            available_delta=ZERO,
+            frozen_delta=-amount,
+            reason=f"{reason}:out",
+            market_id=market_id,
+            lock_id=from_lock_id,
+        )
+        tx_to = Transaction.new(
+            account_id=to_account_id,
+            available_delta=ZERO,
+            frozen_delta=amount,
+            reason=f"{reason}:in",
+            market_id=market_id,
+            lock_id=to_lock.lock_id,
+        )
+        self.transactions.extend([tx_from, tx_to])
+        return tx_from, tx_to
+
+    # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
 
