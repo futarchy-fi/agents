@@ -22,6 +22,14 @@ class AuthResponse(BaseModel):
     account_id: int
     github_login: str
 
+class RegisterRequest(BaseModel):
+    username: str
+
+class RegisterResponse(BaseModel):
+    api_key: str
+    account_id: int
+    username: str
+
 class DeviceFlowResponse(BaseModel):
     device_code: str
     user_code: str

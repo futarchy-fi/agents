@@ -38,8 +38,8 @@ def markets_table(markets: list[dict]) -> str:
 
     lines = [
         "",
-        f"  {BOLD}{_pad('#', 4)}{_pad('Market', 44)}{_pad('YES', 7)}{_pad('NO', 7)}Trades{RESET}",
-        f"  {DIM}{'─' * 70}{RESET}",
+        f"  {BOLD}{_pad('ID', 4)}{_pad('Market', 30)}{_pad('YES', 7)}{_pad('NO', 7)}Trades{RESET}",
+        f"  {DIM}{'─' * 58}{RESET}",
     ]
 
     for m in markets:
@@ -58,15 +58,15 @@ def markets_table(markets: list[dict]) -> str:
         no_p = float(m.get("prices", {}).get("no", 0.5))
         trades = m.get("num_trades", 0)
 
-        yes_str = f"{yes_p:.0%}"
-        no_str = f"{no_p:.0%}"
+        yes_str = f"{yes_p:.2f}"
+        no_str = f"{no_p:.2f}"
 
         lines.append(
-            f"  {PURPLE}{_pad(mid, 4)}{RESET}"
-            f"{_pad(_trunc(title, 42), 44)}"
+            f"  {_pad(mid, 4)}"
+            f"{_pad(_trunc(title, 28), 30)}"
             f"{GREEN}{_pad(yes_str, 7)}{RESET}"
             f"{RED}{_pad(no_str, 7)}{RESET}"
-            f"{_pad(str(trades), 6)}"
+            f"{_pad(str(trades), 6, right=True)}"
         )
 
     lines.append("")
@@ -94,7 +94,7 @@ def market_detail(m: dict) -> str:
         f"  Deadline   {deadline or '-'}",
         "",
         f"  {_bar(yes_p)}",
-        f"  {GREEN}YES  {yes_p:.0%}{RESET}    {RED}NO  {no_p:.0%}{RESET}",
+        f"  {GREEN}YES  {yes_p:.2f}{RESET}    {RED}NO  {no_p:.2f}{RESET}",
         "",
         f"  Volume     {float(volume):,.0f}",
         f"  Trades     {trades_count}",

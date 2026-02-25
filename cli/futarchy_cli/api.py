@@ -60,6 +60,9 @@ class Client:
 
     # ── Auth / user endpoints ──
 
+    def register(self, username: str) -> dict:
+        return self.post("/v1/auth/register", body={"username": username})
+
     def device_auth_start(self) -> dict:
         return self.post("/v1/auth/device", body={})
 

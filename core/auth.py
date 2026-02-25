@@ -41,6 +41,23 @@ class AuthStore:
     def __init__(self):
         self.users: dict[int, User] = {}         # github_id -> User
         self.key_to_user: dict[str, User] = {}   # api_key_hash -> User
+        self.local_users: dict[str, User] = {}   # username -> User (non-GitHub)
+
+    def register_user(self, username: str, account_id: int) -> tuple[User, str]:
+        """Register a local user (no GitHub). Returns (user, raw_api_key)."""
+        if username in self.local_users:
+            raise ValueError("username_taken")
+        raw_key = secrets.token_urlsafe(32)
+        key_hash = _hash_key(raw_key)
+        user = User(
+            github_id=0,
+            github_login=username,
+            account_id=account_id,
+            api_key_hash=key_hash,
+        )
+        self.local_users[username] = user
+        self.key_to_user[key_hash] = user
+        return user, raw_key
 
     def create_user(self, github_id: int, github_login: str,
                     account_id: int) -> tuple[User, str]:

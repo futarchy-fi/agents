@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 from core.api_errors import APIError, api_error_handler, translate_engine_error
 from core.api_models import (
     GitHubAuthRequest, AuthResponse,
+    RegisterRequest, RegisterResponse,
     DeviceFlowStartRequest, DeviceFlowResponse, DeviceFlowPollRequest,
     AccountResponse, LockResponse,
     MarketSummary, MarketDetail, PositionEntry, TradeResponse,
@@ -139,6 +140,35 @@ async def auth_github(req: GitHubAuthRequest) -> AuthResponse:
         api_key=raw_key,
         account_id=user.account_id,
         github_login=user.github_login,
+    )
+
+
+@app.post("/v1/auth/register")
+async def auth_register(req: RegisterRequest) -> RegisterResponse:
+    """Register with just a username. No GitHub required."""
+    username = req.username.strip()
+    if not username or len(username) > 40:
+        raise APIError(400, "invalid_username",
+                       "Username must be 1-40 characters")
+
+    async with app.state.lock:
+        auth_store = app.state.auth_store
+        try:
+            acc = app.state.risk.create_account()
+            if INITIAL_CREDITS > ZERO:
+                app.state.risk.mint(acc.id, INITIAL_CREDITS)
+            user, raw_key = auth_store.register_user(username, acc.id)
+        except ValueError as e:
+            if str(e) == "username_taken":
+                raise APIError(409, "username_taken",
+                               f"Username '{username}' is already taken")
+            raise
+        _save()
+
+    return RegisterResponse(
+        api_key=raw_key,
+        account_id=user.account_id,
+        username=username,
     )
 
 

@@ -60,6 +60,11 @@ def cmd_login(args) -> int:
     return 0
 
 
+def cmd_logout(args) -> int:
+    auth.logout()
+    return 0
+
+
 def cmd_me(args) -> int:
     client = _authed_client(args)
     data = client.me()
@@ -104,7 +109,10 @@ def main(argv: list[str] | None = None) -> int:
     p_market.add_argument("market_id", type=int, help="Market ID")
 
     # futarchy login
-    _sub(sub, "login", help="Authenticate via device flow")
+    _sub(sub, "login", help="Create an account")
+
+    # futarchy logout
+    _sub(sub, "logout", help="Clear saved credentials")
 
     # futarchy me
     _sub(sub, "me", help="Show balance and positions")
@@ -131,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         "markets": cmd_markets,
         "market": cmd_market,
         "login": cmd_login,
+        "logout": cmd_logout,
         "me": cmd_me,
         "buy": cmd_buy,
         "sell": cmd_sell,

@@ -68,7 +68,17 @@ elif [ "$PLATFORM" = "macOS" ]; then
     # Try to install pipx first
     if command -v brew &>/dev/null; then
         info "Installing pipx via Homebrew..."
-        brew install pipx 2>/dev/null && pipx ensurepath 2>/dev/null && USE_PIPX=true
+        brew install pipx 2>/dev/null && USE_PIPX=true || true
+    fi
+fi
+
+# --- Ensure PATH includes pipx bin dir ---
+if $USE_PIPX; then
+    pipx ensurepath 2>/dev/null || true
+    # Also add to current session so `command -v futarchy` works below
+    PIPX_BIN="${HOME}/.local/bin"
+    if [ -d "$PIPX_BIN" ] && [[ ":$PATH:" != *":$PIPX_BIN:"* ]]; then
+        export PATH="$PIPX_BIN:$PATH"
     fi
 fi
 
@@ -99,6 +109,8 @@ if $USE_PIPX; then
         pipx uninstall futarchy 2>/dev/null || true
     fi
     pipx install --pip-args="--no-cache-dir" "$SPEC"
+    # Ensure PATH is configured for future shells
+    pipx ensurepath 2>/dev/null || true
 else
     PIP_ARGS="--force-reinstall --no-deps"
     $PYTHON -m pip install $PIP_ARGS "$SPEC" --break-system-packages 2>/dev/null \
@@ -117,17 +129,12 @@ if command -v futarchy &>/dev/null; then
     echo ""
     info "Get started:"
     printf "  ${BOLD}futarchy markets${NC}        ${DIM}# browse open markets${NC}\n"
-    printf "  ${BOLD}futarchy login${NC}          ${DIM}# authenticate${NC}\n"
+    printf "  ${BOLD}futarchy login${NC}          ${DIM}# create an account${NC}\n"
     printf "  ${BOLD}futarchy buy 1 yes 50${NC}   ${DIM}# trade${NC}\n"
 else
     success "futarchy installed!"
     echo ""
-    # Might need PATH update
-    if $USE_PIPX; then
-        info "Run 'pipx ensurepath' and restart your shell, then:"
-    else
-        info "You may need to restart your shell, then:"
-    fi
+    info "Restart your shell (or run: source ~/.bashrc), then:"
     printf "  ${BOLD}futarchy markets${NC}\n"
 fi
 echo ""

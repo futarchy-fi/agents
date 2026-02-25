@@ -1,10 +1,9 @@
-"""Device-flow authentication and config file management."""
+"""Authentication and config file management."""
 
 from __future__ import annotations
 
 import json
 import sys
-import time
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "futarchy"
@@ -40,44 +39,50 @@ def require_auth() -> str:
 
 
 def login(client) -> None:
-    """Run device-flow authentication."""
+    """Simple registration — pick a username, get an API key."""
+    # Check if already logged in
+    existing = get_api_key()
+    if existing:
+        print("\n  Already logged in.")
+        print(f"  Config: {CONFIG_FILE}")
+        print("  Run `futarchy logout` to reset.\n")
+        return
+
+    # Prompt for username
     try:
-        resp = client.device_auth_start()
-    except Exception as e:
-        print(f"Error starting login: {e}", file=sys.stderr)
+        username = input("\n  Choose a username: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("")
         sys.exit(1)
 
-    verification_url = resp.get("verification_url", resp.get("url", ""))
-    user_code = resp.get("user_code", "")
-    device_code = resp.get("device_code", "")
-    interval = resp.get("interval", 5)
+    if not username:
+        print("Error: username cannot be empty.", file=sys.stderr)
+        sys.exit(1)
 
-    print(f"\nOpen this URL in your browser:\n")
-    print(f"  {verification_url}\n")
-    if user_code:
-        print(f"Enter code: {user_code}\n")
-    print("Waiting for authorization...", end="", flush=True)
+    try:
+        resp = client.register(username)
+    except Exception as e:
+        print(f"\n  Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    for _ in range(120 // interval):
-        time.sleep(interval)
-        try:
-            token_resp = client.device_auth_poll(device_code)
-        except Exception:
-            print(".", end="", flush=True)
-            continue
+    api_key = resp.get("api_key", "")
+    account_id = resp.get("account_id", "?")
 
-        if token_resp.get("api_key"):
-            cfg = load_config()
-            cfg["api_key"] = token_resp["api_key"]
-            save_config(cfg)
-            print(f"\n\nLogged in. Key saved to {CONFIG_FILE}")
-            return
+    cfg = load_config()
+    cfg["api_key"] = api_key
+    cfg["username"] = username
+    save_config(cfg)
 
-        if token_resp.get("error") not in (None, "authorization_pending"):
-            print(f"\n\nLogin failed: {token_resp.get('error')}", file=sys.stderr)
-            sys.exit(1)
+    print(f"\n  Logged in as {username} (account #{account_id})")
+    print(f"  Key saved to {CONFIG_FILE}")
+    print("\n  You have 100 credits to start trading.")
+    print("  Try: futarchy markets\n")
 
-        print(".", end="", flush=True)
 
-    print("\n\nLogin timed out.", file=sys.stderr)
-    sys.exit(1)
+def logout() -> None:
+    """Remove saved credentials."""
+    cfg = load_config()
+    cfg.pop("api_key", None)
+    cfg.pop("username", None)
+    save_config(cfg)
+    print(f"\n  Logged out. Config cleared at {CONFIG_FILE}\n")

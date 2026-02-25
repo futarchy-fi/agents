@@ -215,7 +215,16 @@ def _serialize_auth(auth_store) -> dict:
             "created_at": user.created_at,
             "last_seen_at": user.last_seen_at,
         })
-    return {"users": users}
+    local_users = []
+    for username, user in getattr(auth_store, 'local_users', {}).items():
+        local_users.append({
+            "username": username,
+            "account_id": user.account_id,
+            "api_key_hash": user.api_key_hash,
+            "created_at": user.created_at,
+            "last_seen_at": user.last_seen_at,
+        })
+    return {"users": users, "local_users": local_users}
 
 
 def _load_auth(auth_data: dict):
@@ -233,6 +242,18 @@ def _load_auth(auth_data: dict):
             last_seen_at=udata["last_seen_at"],
         )
         store.users[user.github_id] = user
+        store.key_to_user[user.api_key_hash] = user
+    for udata in auth_data.get("local_users", []):
+        username = udata["username"]
+        user = User(
+            github_id=0,
+            github_login=username,
+            account_id=udata["account_id"],
+            api_key_hash=udata["api_key_hash"],
+            created_at=udata["created_at"],
+            last_seen_at=udata["last_seen_at"],
+        )
+        store.local_users[username] = user
         store.key_to_user[user.api_key_hash] = user
     return store
 
