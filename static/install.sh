@@ -72,6 +72,18 @@ elif [ "$PLATFORM" = "macOS" ]; then
     fi
 fi
 
+# --- Clean up any stale installs ---
+# Remove non-pipx installs that may shadow the pipx binary
+for stale in /opt/homebrew/bin/futarchy /usr/local/bin/futarchy; do
+    if [ -f "$stale" ] && ! readlink -f "$stale" 2>/dev/null | grep -q pipx; then
+        info "Removing stale install at $stale..."
+        rm -f "$stale" 2>/dev/null || sudo rm -f "$stale" 2>/dev/null || true
+    fi
+done
+
+# Also uninstall from system pip if present
+$PYTHON -m pip uninstall futarchy -y 2>/dev/null || true
+
 # --- Install / Upgrade ---
 UPGRADING=false
 if command -v futarchy &>/dev/null; then
@@ -86,7 +98,7 @@ if $USE_PIPX; then
     if $UPGRADING; then
         pipx uninstall futarchy 2>/dev/null || true
     fi
-    pipx install "$SPEC"
+    pipx install --pip-args="--no-cache-dir" "$SPEC"
 else
     PIP_ARGS="--force-reinstall --no-deps"
     $PYTHON -m pip install $PIP_ARGS "$SPEC" --break-system-packages 2>/dev/null \
