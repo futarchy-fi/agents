@@ -10,8 +10,10 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse
 
 from core.api_errors import APIError, api_error_handler, translate_engine_error
 from core.api_models import (
@@ -40,6 +42,7 @@ from core.risk_engine import RiskEngine, InsufficientBalance
 
 
 STATE_PATH = os.environ.get("FUTARCHY_STATE", "./futarchy_state.json")
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 INITIAL_CREDITS = Decimal(os.environ.get("INITIAL_CREDITS", "100"))
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 
@@ -64,6 +67,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Futarchy API", version="0.2.0", lifespan=lifespan)
 app.add_exception_handler(APIError, api_error_handler)
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard():
+    return FileResponse(_STATIC_DIR / "index.html", media_type="text/html")
 
 
 def _save():
