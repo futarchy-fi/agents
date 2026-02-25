@@ -31,7 +31,7 @@ def markets_table(markets: list[dict]) -> str:
     lines.append(f"  {'─' * 67}")
 
     for m in markets:
-        mid = m.get("id", "?")
+        mid = m.get("market_id", m.get("id", "?"))
         title = m.get("title", m.get("question", ""))
         yes_price = m.get("yes_price", m.get("prices", {}).get("yes", 0))
         no_price = m.get("no_price", m.get("prices", {}).get("no", 0))
@@ -54,7 +54,7 @@ def markets_table(markets: list[dict]) -> str:
 
 def market_detail(m: dict) -> str:
     lines = []
-    mid = m.get("id", "?")
+    mid = m.get("market_id", m.get("id", "?"))
     title = m.get("title", m.get("question", ""))
     yes_price = m.get("yes_price", m.get("prices", {}).get("yes", 0))
     no_price = m.get("no_price", m.get("prices", {}).get("no", 0))
