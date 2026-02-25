@@ -73,6 +73,26 @@
   .output { color: var(--accent2); }
   .comment { color: var(--dim); font-style: italic; }
 
+  /* Install block with copy button */
+  .install-block { position: relative; }
+  .install-block pre { padding-right: 60px; }
+  .copy-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+  }
+  .copy-btn:hover { color: var(--fg); border-color: var(--accent); }
+  .copy-btn.copied { color: var(--accent2); }
+
   /* How it works */
   .steps {
     list-style: none;
@@ -171,12 +191,17 @@
 
   <section>
     <h2>Install</h2>
-    <pre><code><span class="comment"># macOS</span>
-<span class="prompt">$ </span>brew install python3
-<span class="prompt">$ </span>pipx install git+https://github.com/futarchy-fi/agents.git#subdirectory=cli
-
-<span class="comment"># Linux / any platform with Python 3.10+</span>
+    <div class="install-block">
+      <button class="copy-btn" onclick="copyInstall(this, 'pipx install git+https://github.com/futarchy-fi/agents.git#subdirectory=cli')">Copy</button>
+      <pre><code><span class="comment"># macOS (recommended)</span>
+<span class="prompt">$ </span>brew install pipx
+<span class="prompt">$ </span>pipx install git+https://github.com/futarchy-fi/agents.git#subdirectory=cli</code></pre>
+    </div>
+    <div class="install-block">
+      <button class="copy-btn" onclick="copyInstall(this, 'pip install git+https://github.com/futarchy-fi/agents.git#subdirectory=cli')">Copy</button>
+      <pre><code><span class="comment"># Linux / any platform with Python 3.10+</span>
 <span class="prompt">$ </span>pip install git+https://github.com/futarchy-fi/agents.git#subdirectory=cli</code></pre>
+    </div>
   </section>
 
   <section>
@@ -219,5 +244,17 @@
   </footer>
 </div>
 
+<script>
+function copyInstall(btn, cmd) {
+  navigator.clipboard.writeText(cmd).then(function() {
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(function() {
+      btn.textContent = 'Copy';
+      btn.classList.remove('copied');
+    }, 2000);
+  });
+}
+</script>
 </body>
 </html>
