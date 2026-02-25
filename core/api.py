@@ -10,8 +10,10 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse
 
 from core.api_errors import APIError, api_error_handler, translate_engine_error
 from core.api_models import (
@@ -72,9 +74,16 @@ def _save():
                   auth_store=app.state.auth_store)
 
 
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+
 # ---------------------------------------------------------------------------
-# Health (public)
+# Landing page + Health (public)
 # ---------------------------------------------------------------------------
+
+@app.get("/landing")
+async def landing():
+    return FileResponse(STATIC_DIR / "landing.html", media_type="text/html")
 
 @app.get("/v1/health")
 async def health() -> HealthResponse:

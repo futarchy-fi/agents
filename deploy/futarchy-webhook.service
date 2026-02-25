@@ -1,0 +1,15 @@
+[Unit]
+Description=Futarchy GitHub Webhook Listener
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/futarchy/agents/deploy
+ExecStart=/usr/bin/python3 /opt/futarchy/agents/deploy/webhook.py
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/etc/futarchy-webhook.env
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+# Reference Caddyfile for api.futarchy.ai
+#
+# Install on server:
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+api.futarchy.ai {
+    handle /hooks/* {
+        reverse_proxy 127.0.0.1:9000
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:8000
+    }
+}

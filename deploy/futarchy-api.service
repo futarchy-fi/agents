@@ -1,0 +1,8 @@
+# Reference only — the live version is /etc/systemd/system/futarchy.service
+# on the server. Do NOT overwrite it from this file; it contains secrets
+# (FUTARCHY_ADMIN_KEY) that are not in the repo.
+#
+# Actual service:
+#   ExecStart=/opt/futarchy/agents/.venv/bin/uvicorn core.api:app --host 0.0.0.0 --port 8000
+#   Environment=FUTARCHY_STATE=/opt/futarchy/data/futarchy_state.json
+#   Environment=FUTARCHY_ADMIN_KEY=<set on server>

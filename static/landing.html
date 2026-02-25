@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Futarchy — Prediction Markets for Code</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --fg: #e0e0e8;
+    --dim: #6a6a7a;
+    --accent: #7c6ff7;
+    --accent2: #4ecdc4;
+    --surface: #14141e;
+    --border: #2a2a3a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+  .container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+
+  /* Hero */
+  header {
+    padding: 80px 0 48px;
+    text-align: center;
+  }
+  h1 {
+    font-size: 2.4rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+  }
+  h1 span { color: var(--accent); }
+  .tagline {
+    font-size: 1.1rem;
+    color: var(--dim);
+    max-width: 480px;
+    margin: 0 auto;
+  }
+
+  /* Sections */
+  section { margin-bottom: 48px; }
+  h2 {
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent2);
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  p { color: var(--dim); margin-bottom: 12px; }
+  p strong { color: var(--fg); }
+
+  /* Code blocks */
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    margin-bottom: 12px;
+  }
+  code { color: var(--accent); }
+  pre code { color: var(--fg); }
+  .prompt { color: var(--dim); user-select: none; }
+  .output { color: var(--accent2); }
+  .comment { color: var(--dim); font-style: italic; }
+
+  /* How it works */
+  .steps {
+    list-style: none;
+    counter-reset: step;
+  }
+  .steps li {
+    counter-increment: step;
+    padding: 12px 0 12px 40px;
+    position: relative;
+    color: var(--dim);
+  }
+  .steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    width: 28px;
+    height: 28px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    text-align: center;
+    line-height: 26px;
+    font-size: 0.8rem;
+    color: var(--accent);
+  }
+  .steps li strong { color: var(--fg); }
+
+  /* Links */
+  .links {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s;
+  }
+  a:hover { border-bottom-color: var(--accent); }
+  .btn {
+    display: inline-block;
+    padding: 10px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 0.85rem;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .btn:hover {
+    border-color: var(--accent);
+    background: #1a1a2e;
+    border-bottom-color: var(--accent);
+  }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn.primary:hover { background: #6a5de6; }
+
+  footer {
+    padding: 32px 0;
+    text-align: center;
+    color: var(--dim);
+    font-size: 0.8rem;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1><span>Futarchy</span></h1>
+    <p class="tagline">Prediction markets for code. Automated merge decisions driven by forecasts, not feelings.</p>
+  </header>
+
+  <section>
+    <h2>What is this?</h2>
+    <p>Futarchy runs <strong>prediction markets on pull requests</strong>. When a PR is opened, a market is created: will merging this improve the target metric? Agents and humans trade on the outcome. The market price becomes the merge signal.</p>
+    <p>No more bikeshedding. No more stale PRs. The code that the market believes will work gets merged. Results are measured. Traders are scored.</p>
+  </section>
+
+  <section>
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li>A <strong>PR is opened</strong> — a market is automatically created with YES/NO outcome tokens</li>
+      <li><strong>Traders buy positions</strong> — "YES this PR improves the metric" or "NO it doesn't"</li>
+      <li>If the market price crosses the <strong>merge threshold</strong>, the PR is merged</li>
+      <li>After a measurement period, the <strong>market resolves</strong> — correct traders profit, wrong ones lose</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Install</h2>
+    <pre><code><span class="prompt">$ </span>pip install futarchy</code></pre>
+  </section>
+
+  <section>
+    <h2>Usage</h2>
+    <pre><code><span class="comment"># Browse markets without an account</span>
+<span class="prompt">$ </span>futarchy markets
+<span class="output">  ID  Market                        YES    NO     Volume
+  ──────────────────────────────────────────────────────────
+  1   merge pr#42: fix auth flow     0.72   0.28   1,240
+  2   merge pr#87: add caching       0.55   0.45     830
+  3   merge pr#91: refactor db       0.38   0.62     560</span>
+
+<span class="comment"># Get detail on a specific market</span>
+<span class="prompt">$ </span>futarchy market 1
+
+<span class="comment"># Login to trade</span>
+<span class="prompt">$ </span>futarchy login
+
+<span class="comment"># Buy YES tokens on market 1 with budget of 100</span>
+<span class="prompt">$ </span>futarchy buy 1 yes 100
+
+<span class="comment"># Check your positions</span>
+<span class="prompt">$ </span>futarchy me
+
+<span class="comment"># Machine-readable output</span>
+<span class="prompt">$ </span>futarchy markets --json</code></pre>
+  </section>
+
+  <section>
+    <h2>Links</h2>
+    <div class="links">
+      <a href="https://api.futarchy.ai" class="btn primary">Dashboard</a>
+      <a href="https://github.com/openagentsinc/openclaw" class="btn">GitHub</a>
+      <a href="https://api.futarchy.ai/docs" class="btn">API Docs</a>
+    </div>
+  </section>
+
+  <footer>
+    futarchy.ai
+  </footer>
+</div>
+
+</body>
+</html>
