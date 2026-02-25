@@ -9,135 +9,183 @@ GREEN = "\033[32m"
 RED = "\033[31m"
 CYAN = "\033[36m"
 YELLOW = "\033[33m"
+PURPLE = "\033[35m"
 
 
-def _col(text: str, width: int) -> str:
+def _trunc(text: str, width: int) -> str:
     s = str(text)
     if len(s) > width:
         return s[: width - 1] + "\u2026"
+    return s
+
+
+def _pad(text: str, width: int, right: bool = False) -> str:
+    s = str(text)
+    if right:
+        return s.rjust(width)
     return s.ljust(width)
 
 
+def _bar(yes: float, width: int = 20) -> str:
+    filled = round(yes * width)
+    empty = width - filled
+    return f"{GREEN}{'█' * filled}{DIM}{'░' * empty}{RESET}"
+
+
 def markets_table(markets: list[dict]) -> str:
-    lines = []
-    header = (
-        f"  {BOLD}{_col('ID', 5)}"
-        f"{_col('Market', 36)}"
-        f"{_col('YES', 8)}"
-        f"{_col('NO', 8)}"
-        f"{_col('Volume', 10)}{RESET}"
-    )
-    lines.append(header)
-    lines.append(f"  {'─' * 67}")
+    if not markets:
+        return f"\n  {DIM}No open markets.{RESET}\n"
+
+    lines = [
+        "",
+        f"  {BOLD}{_pad('#', 4)}{_pad('Market', 44)}{_pad('YES', 7)}{_pad('NO', 7)}Trades{RESET}",
+        f"  {DIM}{'─' * 70}{RESET}",
+    ]
 
     for m in markets:
-        mid = m.get("market_id", m.get("id", "?"))
-        title = m.get("title", m.get("question", ""))
-        yes_price = m.get("yes_price", m.get("prices", {}).get("yes", 0))
-        no_price = m.get("no_price", m.get("prices", {}).get("no", 0))
-        volume = m.get("volume", 0)
+        mid = str(m.get("market_id", m.get("id", "?")))
+        question = m.get("question", "")
 
-        yes_str = f"{float(yes_price):.2f}"
-        no_str = f"{float(no_price):.2f}"
-        vol_str = f"{int(volume):,}"
+        # Extract short title from "Will PR #N 'title' merge by..." format
+        title = question
+        if "'" in question:
+            parts = question.split("'")
+            if len(parts) >= 2:
+                pr_part = question.split("PR #")[1].split(" ")[0] if "PR #" in question else ""
+                title = f"PR #{pr_part} {parts[1]}" if pr_part else parts[1]
+
+        yes_p = float(m.get("prices", {}).get("yes", 0.5))
+        no_p = float(m.get("prices", {}).get("no", 0.5))
+        trades = m.get("num_trades", 0)
+
+        yes_str = f"{yes_p:.0%}"
+        no_str = f"{no_p:.0%}"
 
         lines.append(
-            f"  {_col(mid, 5)}"
-            f"{_col(title, 36)}"
-            f"{GREEN}{_col(yes_str, 8)}{RESET}"
-            f"{RED}{_col(no_str, 8)}{RESET}"
-            f"{_col(vol_str, 10)}"
+            f"  {PURPLE}{_pad(mid, 4)}{RESET}"
+            f"{_pad(_trunc(title, 42), 44)}"
+            f"{GREEN}{_pad(yes_str, 7)}{RESET}"
+            f"{RED}{_pad(no_str, 7)}{RESET}"
+            f"{_pad(str(trades), 6)}"
         )
 
+    lines.append("")
     return "\n".join(lines)
 
 
 def market_detail(m: dict) -> str:
-    lines = []
     mid = m.get("market_id", m.get("id", "?"))
-    title = m.get("title", m.get("question", ""))
-    yes_price = m.get("yes_price", m.get("prices", {}).get("yes", 0))
-    no_price = m.get("no_price", m.get("prices", {}).get("no", 0))
-    volume = m.get("volume", 0)
-    deadline = m.get("deadline", m.get("closes_at", "-"))
+    question = m.get("question", "")
+    yes_p = float(m.get("prices", {}).get("yes", 0.5))
+    no_p = float(m.get("prices", {}).get("no", 0.5))
+    volume = m.get("volume", "0")
+    deadline = m.get("deadline", "-")
     status = m.get("status", "-")
+    trades_count = m.get("num_trades", 0)
 
-    lines.append(f"\n  {BOLD}Market #{mid}: {title}{RESET}")
-    lines.append(f"  {'─' * 50}")
-    lines.append(f"  Status:   {status}")
-    lines.append(f"  YES:      {GREEN}{float(yes_price):.2f}{RESET}")
-    lines.append(f"  NO:       {RED}{float(no_price):.2f}{RESET}")
-    lines.append(f"  Volume:   {int(volume):,}")
-    lines.append(f"  Deadline: {deadline}")
+    status_color = GREEN if status == "open" else YELLOW
+
+    lines = [
+        "",
+        f"  {BOLD}#{mid}{RESET}  {question}",
+        f"  {DIM}{'─' * 60}{RESET}",
+        "",
+        f"  Status     {status_color}{status}{RESET}",
+        f"  Deadline   {deadline or '-'}",
+        "",
+        f"  {_bar(yes_p)}",
+        f"  {GREEN}YES  {yes_p:.0%}{RESET}    {RED}NO  {no_p:.0%}{RESET}",
+        "",
+        f"  Volume     {float(volume):,.0f}",
+        f"  Trades     {trades_count}",
+    ]
 
     trades = m.get("trades", m.get("recent_trades", []))
     if trades:
-        lines.append(f"\n  {BOLD}Recent Trades{RESET}")
-        lines.append(f"  {'─' * 50}")
+        lines.append("")
+        lines.append(f"  {BOLD}Recent Trades{RESET}")
+        lines.append(f"  {DIM}{'─' * 50}{RESET}")
         lines.append(
-            f"  {DIM}{_col('Side', 6)}{_col('Amount', 10)}{_col('Price', 8)}{_col('Time', 20)}{RESET}"
+            f"  {DIM}{_pad('Side', 6)}{_pad('Amount', 10)}{_pad('Price', 8)}{_pad('Time', 24)}{RESET}"
         )
         for t in trades[:10]:
-            side = t.get("side", t.get("outcome", "?"))
+            side = t.get("outcome", t.get("side", "?"))
             amount = t.get("amount", 0)
             price = t.get("price", 0)
-            ts = t.get("time", t.get("created_at", "-"))
+            ts = t.get("created_at", t.get("time", "-"))
+            if isinstance(ts, str) and "T" in ts:
+                ts = ts.split("T")[0] + " " + ts.split("T")[1][:5]
             color = GREEN if side.lower() == "yes" else RED
             lines.append(
-                f"  {color}{_col(side, 6)}{RESET}"
-                f"{_col(f'{float(amount):.1f}', 10)}"
-                f"{_col(f'{float(price):.2f}', 8)}"
-                f"{_col(str(ts), 20)}"
+                f"  {color}{_pad(side.upper(), 6)}{RESET}"
+                f"{_pad(f'{float(amount):.1f}', 10)}"
+                f"{_pad(f'{float(price):.2f}', 8)}"
+                f"{DIM}{ts}{RESET}"
             )
 
+    lines.append("")
     return "\n".join(lines)
 
 
 def user_info(data: dict) -> str:
-    lines = []
-    lines.append(f"\n  {BOLD}Account{RESET}")
-    lines.append(f"  {'─' * 40}")
-    lines.append(f"  Balance: {CYAN}{data.get('balance', 0):.2f}{RESET}")
+    available = data.get("available", data.get("balance", "0"))
+    frozen = data.get("frozen", "0")
+    total = data.get("total", available)
 
+    lines = [
+        "",
+        f"  {BOLD}Account{RESET}",
+        f"  {DIM}{'─' * 40}{RESET}",
+        f"  Available  {CYAN}{float(available):,.2f}{RESET}",
+        f"  Frozen     {float(frozen):,.2f}",
+        f"  Total      {BOLD}{float(total):,.2f}{RESET}",
+    ]
+
+    locks = data.get("locks", [])
     positions = data.get("positions", [])
-    if positions:
-        lines.append(f"\n  {BOLD}Positions{RESET}")
-        lines.append(f"  {'─' * 40}")
-        lines.append(
-            f"  {DIM}{_col('Market', 5)}{_col('Side', 6)}{_col('Shares', 10)}{_col('Avg Price', 10)}{RESET}"
-        )
+    if locks:
+        lines.append("")
+        lines.append(f"  {BOLD}Locks{RESET}")
+        lines.append(f"  {DIM}{'─' * 40}{RESET}")
+        for lk in locks:
+            mkt = lk.get("market_id", "?")
+            amt = float(lk.get("amount", 0))
+            lt = lk.get("lock_type", "")
+            lines.append(f"  Market #{mkt}  {amt:,.2f}  {DIM}{lt}{RESET}")
+    elif positions:
+        lines.append("")
+        lines.append(f"  {BOLD}Positions{RESET}")
+        lines.append(f"  {DIM}{'─' * 40}{RESET}")
         for p in positions:
             mid = p.get("market_id", "?")
             side = p.get("outcome", p.get("side", "?"))
             shares = p.get("shares", p.get("amount", 0))
-            avg = p.get("avg_price", 0)
             color = GREEN if str(side).lower() == "yes" else RED
             lines.append(
-                f"  {_col(mid, 5)}"
-                f"{color}{_col(side, 6)}{RESET}"
-                f"{_col(f'{float(shares):.1f}', 10)}"
-                f"{_col(f'{float(avg):.2f}', 10)}"
+                f"  #{_pad(str(mid), 4)} {color}{_pad(side, 4)}{RESET} {float(shares):,.1f}"
             )
     else:
         lines.append(f"\n  {DIM}No open positions.{RESET}")
 
+    lines.append("")
     return "\n".join(lines)
 
 
 def trade_result(data: dict) -> str:
-    action = data.get("action", "trade")
     outcome = data.get("outcome", "?")
-    shares = data.get("shares", 0)
-    price = data.get("avg_price", data.get("price", 0))
-    cost = data.get("cost", data.get("total", 0))
-    market_id = data.get("market_id", "?")
+    amount = data.get("amount", data.get("shares", 0))
+    price = data.get("price", 0)
+    value = data.get("value", data.get("cost", 0))
+    trade_id = data.get("trade_id", "")
 
     color = GREEN if str(outcome).lower() == "yes" else RED
+
     return (
-        f"\n  {BOLD}{action.capitalize()} executed{RESET}\n"
-        f"  Market:  #{market_id}\n"
-        f"  Side:    {color}{outcome}{RESET}\n"
-        f"  Shares:  {float(shares):.1f}\n"
-        f"  Price:   {float(price):.4f}\n"
-        f"  Cost:    {float(cost):.2f}\n"
+        f"\n  {GREEN}Trade executed{RESET}"
+        f"{'  #' + str(trade_id) if trade_id else ''}\n"
+        f"  {DIM}{'─' * 30}{RESET}\n"
+        f"  Side     {color}{outcome.upper()}{RESET}\n"
+        f"  Tokens   {float(amount):,.1f}\n"
+        f"  Price    {float(price):.4f}\n"
+        f"  Value    {float(value):,.2f}\n"
     )
