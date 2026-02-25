@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 
 from . import __version__
@@ -66,6 +68,39 @@ def cmd_logout(args) -> int:
     return 0
 
 
+REPO = "https://github.com/futarchy-fi/agents.git"
+SPEC = f"futarchy @ git+{REPO}#subdirectory=cli"
+
+
+def cmd_update(args) -> int:
+    print(f"\n  Current version: {__version__}")
+    print("  Updating...\n")
+
+    if shutil.which("pipx"):
+        # pipx: uninstall + reinstall to get latest from git
+        subprocess.run(["pipx", "uninstall", "futarchy"],
+                       capture_output=True)
+        ret = subprocess.run(
+            ["pipx", "install", "--pip-args=--no-cache-dir", SPEC])
+    else:
+        # pip fallback
+        python = sys.executable
+        ret = subprocess.run(
+            [python, "-m", "pip", "install", "--force-reinstall",
+             "--no-cache-dir", SPEC])
+
+    if ret.returncode != 0:
+        print("\n  Update failed.", file=sys.stderr)
+        return 1
+
+    # Show new version by running the freshly installed binary
+    result = subprocess.run(
+        ["futarchy", "--version"], capture_output=True, text=True)
+    new_version = result.stdout.strip() if result.returncode == 0 else "unknown"
+    print(f"\n  Updated to {new_version}")
+    return 0
+
+
 def cmd_me(args) -> int:
     client = _authed_client(args)
     data = client.me()
@@ -117,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
     # futarchy logout
     _sub(sub, "logout", help="Clear saved credentials")
 
+    # futarchy update
+    _sub(sub, "update", help="Update to latest version")
+
     # futarchy me
     _sub(sub, "me", help="Show balance and positions")
 
@@ -143,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         "market": cmd_market,
         "login": cmd_login,
         "logout": cmd_logout,
+        "update": cmd_update,
         "me": cmd_me,
         "buy": cmd_buy,
         "sell": cmd_sell,
