@@ -1,0 +1,98 @@
+name: PR Market Daily Rollover
+
+on:
+  schedule:
+    - cron: '5 0 * * *'  # 00:05 UTC daily
+  workflow_dispatch: {}   # manual trigger for testing
+
+env:
+  API_URL: https://api.futarchy.ai
+  REPO: futarchy-fi/agents
+  TREASURY_ACCOUNT_ID: ${{ secrets.FUTARCHY_TREASURY_ID }}
+  # Rollover uses full budget at once (no ramp — price discovery happened yesterday)
+  LIQUIDITY_BUDGET: "200"
+
+jobs:
+  rollover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve expired markets and create new ones
+        env:
+          ADMIN_KEY: ${{ secrets.FUTARCHY_ADMIN_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$ADMIN_KEY" ] || [ -z "$TREASURY_ACCOUNT_ID" ]; then
+            echo "Skipping: FUTARCHY_ADMIN_KEY or FUTARCHY_TREASURY_ID secret not configured"
+            exit 0
+          fi
+
+          TODAY=$(date -u +%Y-%m-%d)
+          TOMORROW=$(date -u -d "+1 day" +%Y-%m-%d)
+          DEADLINE="${TOMORROW}T00:00:00Z"
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          echo "=== Rollover: ${TODAY} ==="
+
+          # Step 1: Resolve all open pr_merge markets whose deadline has passed
+          OPEN_MARKETS=$(curl -sf "${API_URL}/v1/markets?category=pr_merge&status=open")
+
+          echo "$OPEN_MARKETS" | jq -c '.[]' | while read -r MARKET; do
+            MID=$(echo "$MARKET" | jq -r '.market_id')
+            CID=$(echo "$MARKET" | jq -r '.category_id')
+
+            # Get full detail to check deadline
+            DETAIL=$(curl -sf "${API_URL}/v1/markets/${MID}")
+            MARKET_DEADLINE=$(echo "$DETAIL" | jq -r '.deadline // empty')
+
+            if [ -n "$MARKET_DEADLINE" ] && [[ "$MARKET_DEADLINE" < "$NOW" || "$MARKET_DEADLINE" == "$NOW" ]]; then
+              echo "Resolving expired market ${MID} (${CID}) as NO"
+              curl -sf "${API_URL}/v1/admin/markets/${MID}/resolve" \
+                -H "Authorization: Bearer ${ADMIN_KEY}" \
+                -H "Content-Type: application/json" \
+                -d '{"outcome": "no"}'
+            fi
+          done
+
+          # Step 2: For each open PR, ensure a market exists for today
+          # Rollover markets get full liquidity at once (no ramp)
+          gh pr list --repo "${REPO}" --state open --json number,title --limit 100 | \
+            jq -c '.[]' | while read -r PR; do
+            PR_NUM=$(echo "$PR" | jq -r '.number')
+            PR_TITLE=$(echo "$PR" | jq -r '.title')
+            CATEGORY_ID="${REPO}#${PR_NUM}@${TODAY}"
+
+            # Check if an open market already exists for this PR today
+            EXISTING=$(curl -sf "${API_URL}/v1/markets?category=pr_merge&category_id=$(jq -rn --arg v "$CATEGORY_ID" '$v | @uri')&status=open")
+            COUNT=$(echo "$EXISTING" | jq 'length')
+
+            if [ "$COUNT" -eq 0 ]; then
+              QUESTION="Will PR #${PR_NUM} '${PR_TITLE}' merge by ${DEADLINE}?"
+
+              echo "Creating market for PR #${PR_NUM}: ${CATEGORY_ID} (full budget: ${LIQUIDITY_BUDGET}, treasury: ${TREASURY_ACCOUNT_ID})"
+              curl -sf "${API_URL}/v1/admin/markets" \
+                -H "Authorization: Bearer ${ADMIN_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -n \
+                  --arg q "$QUESTION" \
+                  --arg cid "$CATEGORY_ID" \
+                  --arg dl "$DEADLINE" \
+                  --arg funding "$LIQUIDITY_BUDGET" \
+                  --argjson funding_acct "${TREASURY_ACCOUNT_ID}" \
+                  --argjson pr_num "$PR_NUM" \
+                  '{
+                    question: $q,
+                    category: "pr_merge",
+                    category_id: $cid,
+                    funding: $funding,
+                    funding_account_id: $funding_acct,
+                    deadline: $dl,
+                    metadata: {pr_number: $pr_num, repo: "'"${REPO}"'"}
+                  }')"
+            else
+              echo "Market already exists for PR #${PR_NUM} today"
+            fi
+          done
+
+          echo "=== Rollover complete ==="

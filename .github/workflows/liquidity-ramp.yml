@@ -1,0 +1,79 @@
+name: Liquidity Ramp
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # every 30 minutes
+  workflow_dispatch: {}      # manual trigger for testing
+
+env:
+  API_URL: https://api.futarchy.ai
+  TREASURY_ACCOUNT_ID: ${{ secrets.FUTARCHY_TREASURY_ID }}
+
+jobs:
+  ramp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add scheduled liquidity to markets
+        env:
+          ADMIN_KEY: ${{ secrets.FUTARCHY_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$ADMIN_KEY" ] || [ -z "$TREASURY_ACCOUNT_ID" ]; then
+            echo "Skipping: FUTARCHY_ADMIN_KEY or FUTARCHY_TREASURY_ID secret not configured"
+            exit 0
+          fi
+
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "=== Liquidity ramp: ${NOW} ==="
+
+          # Find all open pr_merge markets
+          MARKETS=$(curl -sf "${API_URL}/v1/markets?category=pr_merge&status=open")
+
+          echo "$MARKETS" | jq -r '.[].market_id' | while read -r MID; do
+            [ -z "$MID" ] && continue
+
+            # Get full detail to check ramp metadata
+            DETAIL=$(curl -sf "${API_URL}/v1/markets/${MID}")
+            STEPS=$(echo "$DETAIL" | jq -r '.metadata.liquidity_steps_remaining // 0')
+            NEXT_AT=$(echo "$DETAIL" | jq -r '.metadata.next_liquidity_at // empty')
+            STEP_AMOUNT=$(echo "$DETAIL" | jq -r '.metadata.liquidity_step // empty')
+
+            # Skip if no ramp scheduled or no steps left
+            if [ "$STEPS" -eq 0 ] || [ -z "$NEXT_AT" ] || [ -z "$STEP_AMOUNT" ]; then
+              continue
+            fi
+
+            # Skip if not yet time
+            if [[ "$NEXT_AT" > "$NOW" ]]; then
+              continue
+            fi
+
+            echo "Adding ${STEP_AMOUNT} liquidity to market ${MID} (${STEPS} steps remaining)"
+
+            # Add liquidity (funded from treasury)
+            curl -sf "${API_URL}/v1/admin/markets/${MID}/add-liquidity" \
+              -H "Authorization: Bearer ${ADMIN_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"amount\": \"${STEP_AMOUNT}\", \"funding_account_id\": ${TREASURY_ACCOUNT_ID}}"
+
+            # Update ramp metadata
+            NEW_STEPS=$((STEPS - 1))
+            if [ "$NEW_STEPS" -gt 0 ]; then
+              # Schedule next top-up 30 min from the scheduled time (not from now)
+              NEW_NEXT=$(date -u -d "${NEXT_AT} +30 minutes" +%Y-%m-%dT%H:%M:%SZ)
+              METADATA="{\"metadata\": {\"liquidity_steps_remaining\": ${NEW_STEPS}, \"next_liquidity_at\": \"${NEW_NEXT}\"}}"
+            else
+              # Ramp complete — clear schedule
+              METADATA="{\"metadata\": {\"liquidity_steps_remaining\": 0, \"next_liquidity_at\": null}}"
+            fi
+
+            curl -sf -X PATCH "${API_URL}/v1/admin/markets/${MID}/metadata" \
+              -H "Authorization: Bearer ${ADMIN_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "$METADATA"
+
+            echo "Market ${MID}: ramp step done, ${NEW_STEPS} steps remaining"
+          done
+
+          echo "=== Liquidity ramp complete ==="

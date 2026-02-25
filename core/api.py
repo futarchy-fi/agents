@@ -20,15 +20,18 @@ from core.api_models import (
     AccountResponse, LockResponse,
     MarketSummary, MarketDetail, PositionEntry, TradeResponse,
     BuyRequest, SellRequest, TradeResult,
+    CreateAccountResponse,
     MintRequest, MintResponse,
     CreateMarketRequest, CreateMarketResponse,
     ResolveRequest, HealthResponse,
+    AddLiquidityRequest, AddLiquidityResponse,
+    UpdateMetadataRequest,
 )
 from core.auth import (
     AuthStore, validate_github_token,
     start_device_flow, poll_device_flow,
 )
-from core.lmsr import prices as lmsr_prices
+from core.lmsr import max_loss, prices as lmsr_prices
 from core.market_engine import MarketEngine
 from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
 from core.models import ZERO, reset_counters
@@ -199,10 +202,27 @@ async def auth_device_poll(req: DeviceFlowPollRequest) -> AuthResponse:
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/markets")
-async def list_markets() -> list[MarketSummary]:
-    """List all markets with current prices."""
+async def list_markets(
+    category: str | None = None,
+    category_id: str | None = None,
+    status: str | None = None,
+) -> list[MarketSummary]:
+    """List all markets with current prices.
+
+    Optional filters:
+    - category: exact match on market category
+    - category_id: prefix match (e.g. "pr_merge/repo#7" matches
+      "pr_merge/repo#7@2026-02-24")
+    - status: exact match on market status ("open", "resolved", "void")
+    """
     result = []
     for m in app.state.me.markets.values():
+        if category is not None and m.category != category:
+            continue
+        if category_id is not None and not m.category_id.startswith(category_id):
+            continue
+        if status is not None and m.status != status:
+            continue
         p = lmsr_prices(m.q, m.b) if m.status == "open" else {}
         result.append(MarketSummary(
             market_id=m.id,
@@ -388,6 +408,15 @@ async def sell(market_id: int, req: SellRequest, user: AuthUser) -> TradeResult:
 # Admin endpoints
 # ---------------------------------------------------------------------------
 
+@app.post("/v1/admin/accounts")
+async def admin_create_account(_: AdminDep) -> CreateAccountResponse:
+    """Create a new account (e.g. treasury). Returns account_id."""
+    async with app.state.lock:
+        acc = app.state.risk.create_account()
+        _save()
+    return CreateAccountResponse(account_id=acc.id)
+
+
 @app.post("/v1/admin/mint")
 async def admin_mint(req: MintRequest, _: AdminDep) -> MintResponse:
     """Mint credits to an account."""
@@ -412,22 +441,47 @@ async def admin_mint(req: MintRequest, _: AdminDep) -> MintResponse:
 @app.post("/v1/admin/markets")
 async def admin_create_market(req: CreateMarketRequest,
                               _: AdminDep) -> CreateMarketResponse:
-    """Create a new market."""
-    try:
-        b = Decimal(req.b)
-    except InvalidOperation:
-        raise APIError(400, "invalid_amount", f"Invalid b: {req.b}")
+    """Create a new market. Supply either `b` (LMSR parameter) or `funding`
+    (dollar amount — converted to appropriate b)."""
+    import math as _math
+
+    if req.funding is not None and req.b is not None:
+        raise APIError(400, "invalid_request",
+                       "Provide either 'b' or 'funding', not both")
+
+    n_outcomes = len(req.outcomes) if req.outcomes else 2
+
+    if req.funding is not None:
+        try:
+            funding = Decimal(req.funding)
+        except InvalidOperation:
+            raise APIError(400, "invalid_amount",
+                           f"Invalid funding: {req.funding}")
+        if funding <= ZERO:
+            raise APIError(400, "invalid_amount", "Funding must be positive")
+        # b = funding / ln(n)
+        b = funding / Decimal(str(_math.log(n_outcomes)))
+    else:
+        b_str = req.b or "100"
+        try:
+            b = Decimal(b_str)
+        except InvalidOperation:
+            raise APIError(400, "invalid_amount", f"Invalid b: {b_str}")
 
     async with app.state.lock:
-        market, amm = app.state.me.create_market(
-            question=req.question,
-            category=req.category,
-            category_id=req.category_id,
-            metadata=req.metadata,
-            b=b,
-            outcomes=req.outcomes,
-            deadline=req.deadline,
-        )
+        try:
+            market, amm = app.state.me.create_market(
+                question=req.question,
+                category=req.category,
+                category_id=req.category_id,
+                metadata=req.metadata,
+                b=b,
+                outcomes=req.outcomes,
+                deadline=req.deadline,
+                funding_account_id=req.funding_account_id,
+            )
+        except (ValueError, InsufficientBalance) as e:
+            raise translate_engine_error(e)
         _save()
 
     return CreateMarketResponse(
@@ -462,3 +516,46 @@ async def admin_void(market_id: int, _: AdminDep) -> dict:
             raise translate_engine_error(e)
 
     return {"market_id": market_id, "status": "void"}
+
+
+@app.post("/v1/admin/markets/{market_id}/add-liquidity")
+async def admin_add_liquidity(market_id: int, req: AddLiquidityRequest,
+                              _: AdminDep) -> AddLiquidityResponse:
+    """Add liquidity to a market. AMM must have sufficient available balance."""
+    try:
+        amount = Decimal(req.amount)
+    except InvalidOperation:
+        raise APIError(400, "invalid_amount", f"Invalid amount: {req.amount}")
+    if amount <= ZERO:
+        raise APIError(400, "invalid_amount", "Amount must be positive")
+
+    async with app.state.lock:
+        try:
+            app.state.me.add_liquidity(
+                market_id, amount,
+                funding_account_id=req.funding_account_id)
+            _save()
+        except (ValueError, InsufficientBalance) as e:
+            raise translate_engine_error(e)
+
+    m = app.state.me.markets[market_id]
+    return AddLiquidityResponse(
+        market_id=market_id,
+        b=str(m.b),
+        funding_added=str(amount),
+    )
+
+
+@app.patch("/v1/admin/markets/{market_id}/metadata")
+async def admin_update_metadata(market_id: int, req: UpdateMetadataRequest,
+                                _: AdminDep) -> dict:
+    """Merge keys into a market's metadata."""
+    m = app.state.me.markets.get(market_id)
+    if m is None:
+        raise APIError(404, "market_not_found", f"Market {market_id} not found")
+
+    async with app.state.lock:
+        m.metadata.update(req.metadata)
+        _save()
+
+    return {"market_id": market_id, "metadata": m.metadata}

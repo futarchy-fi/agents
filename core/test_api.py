@@ -237,6 +237,104 @@ class TestPublicMarketData:
         assert resp.status_code == 200
         assert resp.json() == []  # No trades yet
 
+    async def test_list_markets_filter_by_category(self, client):
+        await self._create_market(client)
+        # Create a second market with different category
+        await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                          json={"question": "Will PR merge?",
+                                "category": "pr_merge",
+                                "category_id": "repo#1@2026-02-24"})
+
+        # Filter by category
+        resp = await client.get("/v1/markets", params={"category": "pr_merge"})
+        assert resp.status_code == 200
+        markets = resp.json()
+        assert len(markets) == 1
+        assert markets[0]["category"] == "pr_merge"
+
+        # Filter by non-existent category
+        resp = await client.get("/v1/markets", params={"category": "nope"})
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_list_markets_filter_by_category_id_prefix(self, client):
+        # Create two markets with same PR but different dates
+        await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                          json={"question": "Merge today?",
+                                "category": "pr_merge",
+                                "category_id": "repo#7@2026-02-24"})
+        await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                          json={"question": "Merge tomorrow?",
+                                "category": "pr_merge",
+                                "category_id": "repo#7@2026-02-25"})
+        await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                          json={"question": "Other PR?",
+                                "category": "pr_merge",
+                                "category_id": "repo#8@2026-02-24"})
+
+        # Prefix match: all markets for PR #7
+        resp = await client.get("/v1/markets",
+                                params={"category_id": "repo#7"})
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+        # Exact match
+        resp = await client.get("/v1/markets",
+                                params={"category_id": "repo#7@2026-02-24"})
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+    async def test_list_markets_filter_by_status(self, client):
+        mid = await self._create_market(client)
+
+        # All open
+        resp = await client.get("/v1/markets", params={"status": "open"})
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+        # None resolved yet
+        resp = await client.get("/v1/markets", params={"status": "resolved"})
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+        # Resolve the market
+        await client.post(f"/v1/admin/markets/{mid}/resolve",
+                          headers=ADMIN_HEADERS,
+                          json={"outcome": "yes"})
+
+        # Now resolved
+        resp = await client.get("/v1/markets", params={"status": "resolved"})
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+        # No open markets
+        resp = await client.get("/v1/markets", params={"status": "open"})
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_list_markets_combined_filters(self, client):
+        await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                          json={"question": "PR?", "category": "pr_merge",
+                                "category_id": "repo#1@2026-02-24"})
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "Other?",
+                                        "category": "pr_merge",
+                                        "category_id": "repo#2@2026-02-24"})
+        mid2 = resp.json()["market_id"]
+
+        # Resolve one
+        await client.post(f"/v1/admin/markets/{mid2}/resolve",
+                          headers=ADMIN_HEADERS,
+                          json={"outcome": "no"})
+
+        # Combined: pr_merge + open
+        resp = await client.get("/v1/markets",
+                                params={"category": "pr_merge",
+                                        "status": "open"})
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+        assert resp.json()[0]["category_id"] == "repo#1@2026-02-24"
+
     async def test_positions_show_after_trade(self, client):
         mid = await self._create_market(client)
         key = await _mock_auth(client)
@@ -480,6 +578,187 @@ class TestAdmin:
                                        "category_id": "t#c", "b": "50"})
         assert resp.status_code == 200
         assert resp.json()["b"] == "50"
+
+    async def test_create_market_with_funding(self, client):
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "Fund?", "category": "t",
+                                        "category_id": "t#f", "funding": "200"})
+        assert resp.status_code == 200
+        data = resp.json()
+        # b should be funding / ln(2) ≈ 288.54
+        b_val = Decimal(data["b"])
+        assert b_val > Decimal("288") and b_val < Decimal("289")
+
+    async def test_create_market_funding_and_b_rejected(self, client):
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "?", "category": "t",
+                                        "category_id": "t#x",
+                                        "b": "100", "funding": "200"})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_request"
+
+    async def test_add_liquidity(self, client):
+        # Create market
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "Liq?", "category": "t",
+                                        "category_id": "t#liq",
+                                        "funding": "40"})
+        assert resp.status_code == 200
+        mid = resp.json()["market_id"]
+        amm_id = resp.json()["amm_account_id"]
+        b_before = Decimal(resp.json()["b"])
+
+        # Mint extra to AMM
+        resp = await client.post("/v1/admin/mint", headers=ADMIN_HEADERS,
+                                  json={"account_id": amm_id, "amount": "160"})
+        assert resp.status_code == 200
+
+        # Add liquidity
+        resp = await client.post(f"/v1/admin/markets/{mid}/add-liquidity",
+                                  headers=ADMIN_HEADERS,
+                                  json={"amount": "40"})
+        assert resp.status_code == 200
+        b_after = Decimal(resp.json()["b"])
+        assert b_after > b_before
+        assert resp.json()["funding_added"] == "40"
+
+        # Prices should still sum to ~1
+        resp = await client.get(f"/v1/markets/{mid}")
+        prices = resp.json()["prices"]
+        total = sum(Decimal(v) for v in prices.values())
+        assert abs(total - 1) < Decimal("0.01")
+
+    async def test_add_liquidity_insufficient_balance(self, client):
+        # Create market — AMM has no extra available
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "?", "category": "t",
+                                        "category_id": "t#liq2",
+                                        "funding": "40"})
+        mid = resp.json()["market_id"]
+
+        # Try to add liquidity without minting extra
+        resp = await client.post(f"/v1/admin/markets/{mid}/add-liquidity",
+                                  headers=ADMIN_HEADERS,
+                                  json={"amount": "40"})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "insufficient_balance"
+
+    async def test_update_metadata(self, client):
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "Meta?", "category": "t",
+                                        "category_id": "t#meta"})
+        mid = resp.json()["market_id"]
+
+        # Update metadata
+        resp = await client.patch(f"/v1/admin/markets/{mid}/metadata",
+                                   headers=ADMIN_HEADERS,
+                                   json={"metadata": {
+                                       "liquidity_steps_remaining": 3,
+                                       "next_liquidity_at": "2026-02-24T12:30:00Z",
+                                   }})
+        assert resp.status_code == 200
+        assert resp.json()["metadata"]["liquidity_steps_remaining"] == 3
+
+        # Verify via market detail
+        resp = await client.get(f"/v1/markets/{mid}")
+        assert resp.json()["metadata"]["liquidity_steps_remaining"] == 3
+
+        # Merge update (existing keys preserved)
+        resp = await client.patch(f"/v1/admin/markets/{mid}/metadata",
+                                   headers=ADMIN_HEADERS,
+                                   json={"metadata": {
+                                       "liquidity_steps_remaining": 2,
+                                   }})
+        assert resp.status_code == 200
+        # next_liquidity_at should still be there
+        assert resp.json()["metadata"]["next_liquidity_at"] == "2026-02-24T12:30:00Z"
+        assert resp.json()["metadata"]["liquidity_steps_remaining"] == 2
+
+    async def test_create_account(self, client):
+        resp = await client.post("/v1/admin/accounts", headers=ADMIN_HEADERS)
+        assert resp.status_code == 200
+        assert "account_id" in resp.json()
+        assert resp.json()["account_id"] > 0
+
+    async def test_create_market_with_treasury(self, client):
+        """Create market funded from a treasury account instead of minting."""
+        # Create treasury and mint to it
+        resp = await client.post("/v1/admin/accounts", headers=ADMIN_HEADERS)
+        treasury_id = resp.json()["account_id"]
+        await client.post("/v1/admin/mint", headers=ADMIN_HEADERS,
+                          json={"account_id": treasury_id, "amount": "8000"})
+
+        # Create market funded from treasury
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "Treasury?", "category": "t",
+                                        "category_id": "t#treasury",
+                                        "funding": "200",
+                                        "funding_account_id": treasury_id})
+        assert resp.status_code == 200
+        mid = resp.json()["market_id"]
+        b_val = Decimal(resp.json()["b"])
+        assert b_val > Decimal("288") and b_val < Decimal("289")
+
+        # Treasury balance should have decreased
+        treasury = app.state.risk.get_account(treasury_id)
+        assert treasury.available_balance < Decimal("8000")
+
+        # Market should be functional (buy works)
+        key = await _mock_auth(client)
+        resp = await client.post(f"/v1/markets/{mid}/buy",
+                                  headers=_user_headers(key),
+                                  json={"outcome": "yes", "budget": "10"})
+        assert resp.status_code == 200
+
+    async def test_add_liquidity_with_treasury(self, client):
+        """Add liquidity funded from treasury (no need to mint to AMM)."""
+        # Create treasury
+        resp = await client.post("/v1/admin/accounts", headers=ADMIN_HEADERS)
+        treasury_id = resp.json()["account_id"]
+        await client.post("/v1/admin/mint", headers=ADMIN_HEADERS,
+                          json={"account_id": treasury_id, "amount": "8000"})
+
+        # Create market from treasury with initial funding
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "Ramp?", "category": "t",
+                                        "category_id": "t#ramp",
+                                        "funding": "40",
+                                        "funding_account_id": treasury_id})
+        assert resp.status_code == 200
+        mid = resp.json()["market_id"]
+        b_before = Decimal(resp.json()["b"])
+
+        treasury_before = app.state.risk.get_account(treasury_id).available_balance
+
+        # Add liquidity from treasury (no mint to AMM needed)
+        resp = await client.post(f"/v1/admin/markets/{mid}/add-liquidity",
+                                  headers=ADMIN_HEADERS,
+                                  json={"amount": "40",
+                                        "funding_account_id": treasury_id})
+        assert resp.status_code == 200
+        b_after = Decimal(resp.json()["b"])
+        assert b_after > b_before
+
+        # Treasury should have decreased by 40
+        treasury_after = app.state.risk.get_account(treasury_id).available_balance
+        assert treasury_before - treasury_after == Decimal("40")
+
+    async def test_treasury_insufficient_balance(self, client):
+        """Treasury with insufficient balance returns 400."""
+        # Create treasury with small balance
+        resp = await client.post("/v1/admin/accounts", headers=ADMIN_HEADERS)
+        treasury_id = resp.json()["account_id"]
+        await client.post("/v1/admin/mint", headers=ADMIN_HEADERS,
+                          json={"account_id": treasury_id, "amount": "10"})
+
+        # Try to create market needing more than 10 credits
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                  json={"question": "Broke?", "category": "t",
+                                        "category_id": "t#broke",
+                                        "funding": "200",
+                                        "funding_account_id": treasury_id})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "insufficient_balance"
 
     async def test_no_admin_key_configured(self, client):
         # Temporarily clear admin key
