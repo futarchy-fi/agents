@@ -81,6 +81,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 # Landing page + Health (public)
 # ---------------------------------------------------------------------------
 
+@app.get("/")
 @app.get("/landing")
 async def landing():
     return FileResponse(STATIC_DIR / "landing.html", media_type="text/html")
