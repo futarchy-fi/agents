@@ -72,26 +72,30 @@ elif [ "$PLATFORM" = "macOS" ]; then
     fi
 fi
 
-# --- Uninstall old version if present ---
+# --- Install / Upgrade ---
+UPGRADING=false
 if command -v futarchy &>/dev/null; then
-    info "Removing previous installation..."
-    if $USE_PIPX; then
-        pipx uninstall futarchy 2>/dev/null || true
-    else
-        $PYTHON -m pip uninstall futarchy -y 2>/dev/null || true
-    fi
+    UPGRADING=true
+    header "Upgrading..."
+else
+    header "Installing..."
 fi
-
-# --- Install ---
-header "Installing..."
 echo ""
 
 if $USE_PIPX; then
+    if $UPGRADING; then
+        pipx uninstall futarchy 2>/dev/null || true
+    fi
     pipx install "$SPEC"
 else
+    PIP_ARGS="--force-reinstall --no-deps"
+    $PYTHON -m pip install $PIP_ARGS "$SPEC" --break-system-packages 2>/dev/null \
+        || $PYTHON -m pip install $PIP_ARGS "$SPEC" --user 2>/dev/null \
+        || $PYTHON -m pip install $PIP_ARGS "$SPEC"
+    # Ensure deps are present (--no-deps skipped them above)
     $PYTHON -m pip install "$SPEC" --break-system-packages 2>/dev/null \
         || $PYTHON -m pip install "$SPEC" --user 2>/dev/null \
-        || $PYTHON -m pip install "$SPEC"
+        || $PYTHON -m pip install "$SPEC" 2>/dev/null || true
 fi
 
 # --- Verify ---
