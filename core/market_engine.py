@@ -65,11 +65,14 @@ class MarketEngine:
                       price_precision: int = 4,
                       amount_precision: int = 2,
                       outcomes: list[str] = None,
-                      deadline: str = None) -> tuple[Market, 'Account']:
+                      deadline: str = None,
+                      funding_account_id: int | None = None,
+                      ) -> tuple[Market, 'Account']:
         """
         Create a market with a funded AMM.
-        Mints the subsidy (max_loss) to the AMM account and locks it.
-        This is the ONLY place credits are ever minted.
+
+        If funding_account_id is provided, transfers the subsidy from that
+        account to the AMM (treasury mode). Otherwise mints fresh credits.
         """
         amm = self.risk.create_account()
         market = Market.new(
@@ -87,7 +90,12 @@ class MarketEngine:
         self.markets[market.id] = market
 
         subsidy = max_loss(b, len(market.outcomes))
-        self.risk.mint(amm.id, subsidy)
+        if funding_account_id is not None:
+            self.risk.transfer_available(
+                funding_account_id, amm.id, subsidy,
+                market_id=market.id, reason="market_funding")
+        else:
+            self.risk.mint(amm.id, subsidy)
         self.risk.lock(amm.id, market.id, subsidy, lock_type="position")
 
         return market, amm
@@ -480,13 +488,23 @@ class MarketEngine:
     # Liquidity
     # ------------------------------------------------------------------
 
-    def add_liquidity(self, market_id: int, funding: Decimal) -> None:
-        """Add liquidity to a market. AMM must have sufficient available."""
+    def add_liquidity(self, market_id: int, funding: Decimal,
+                      funding_account_id: int | None = None) -> None:
+        """Add liquidity to a market.
+
+        If funding_account_id is provided, transfers from that account to the
+        AMM first. Otherwise the AMM must already have sufficient available.
+        """
         market = self._get_open_market(market_id)
         amm_id = market.amm_account_id
         funding = quantize(funding)
 
         new_b, new_q = b_for_funding(market.q, market.b, funding)
+
+        if funding_account_id is not None:
+            self.risk.transfer_available(
+                funding_account_id, amm_id, funding,
+                market_id=market.id, reason="add_liquidity_funding")
 
         amm_lock = self.risk.get_account(amm_id).lock_for(
             market.id, "position")

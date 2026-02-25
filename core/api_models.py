@@ -106,6 +106,9 @@ class TradeResult(BaseModel):
 
 # --- Admin ---
 
+class CreateAccountResponse(BaseModel):
+    account_id: int
+
 class MintRequest(BaseModel):
     account_id: int
     amount: str
@@ -118,7 +121,9 @@ class CreateMarketRequest(BaseModel):
     question: str
     category: str
     category_id: str
-    b: str = "100"
+    b: str | None = None
+    funding: str | None = None
+    funding_account_id: int | None = None
     outcomes: list[str] | None = None
     deadline: str | None = None
     metadata: dict = {}
@@ -130,6 +135,18 @@ class CreateMarketResponse(BaseModel):
 
 class ResolveRequest(BaseModel):
     outcome: str
+
+class AddLiquidityRequest(BaseModel):
+    amount: str
+    funding_account_id: int | None = None
+
+class AddLiquidityResponse(BaseModel):
+    market_id: int
+    b: str
+    funding_added: str
+
+class UpdateMetadataRequest(BaseModel):
+    metadata: dict
 
 class HealthResponse(BaseModel):
     status: str

@@ -1,0 +1,107 @@
+name: PR Prediction Markets
+
+on:
+  pull_request:
+    types: [opened, closed]
+
+env:
+  API_URL: https://api.futarchy.ai
+  REPO: ${{ github.repository }}
+  TREASURY_ACCOUNT_ID: ${{ secrets.FUTARCHY_TREASURY_ID }}
+  # Liquidity settings (in credits/dollars)
+  LIQUIDITY_BUDGET: "200"
+  LIQUIDITY_INITIAL: "40"
+  LIQUIDITY_STEP: "40"
+  LIQUIDITY_RAMP_STEPS: "4"
+  LIQUIDITY_RAMP_INTERVAL_MINUTES: "30"
+
+jobs:
+  pr-opened:
+    if: github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create market with initial liquidity
+        env:
+          ADMIN_KEY: ${{ secrets.FUTARCHY_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          TODAY=$(date -u +%Y-%m-%d)
+          TOMORROW=$(date -u -d "+1 day" +%Y-%m-%d)
+          DEADLINE="${TOMORROW}T00:00:00Z"
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # First ramp top-up is 30 min from now
+          NEXT_LIQUIDITY=$(date -u -d "+${LIQUIDITY_RAMP_INTERVAL_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
+
+          QUESTION="Will PR #${PR_NUM} '${PR_TITLE}' merge by ${DEADLINE}?"
+          CATEGORY_ID="${REPO}#${PR_NUM}@${TODAY}"
+
+          # Create market with initial funding from treasury
+          RESULT=$(curl -sf "${API_URL}/v1/admin/markets" \
+            -H "Authorization: Bearer ${ADMIN_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg q "$QUESTION" \
+              --arg cid "$CATEGORY_ID" \
+              --arg dl "$DEADLINE" \
+              --arg funding "$LIQUIDITY_INITIAL" \
+              --argjson funding_acct "${TREASURY_ACCOUNT_ID}" \
+              --arg pr_url "${{ github.event.pull_request.html_url }}" \
+              --argjson pr_num "$PR_NUM" \
+              --arg budget "$LIQUIDITY_BUDGET" \
+              --arg step "$LIQUIDITY_STEP" \
+              --argjson steps_remaining "${LIQUIDITY_RAMP_STEPS}" \
+              --arg next_at "$NEXT_LIQUIDITY" \
+              '{
+                question: $q,
+                category: "pr_merge",
+                category_id: $cid,
+                funding: $funding,
+                funding_account_id: $funding_acct,
+                deadline: $dl,
+                metadata: {
+                  pr_number: $pr_num,
+                  pr_url: $pr_url,
+                  repo: "'"${REPO}"'",
+                  liquidity_budget: $budget,
+                  liquidity_step: $step,
+                  liquidity_steps_remaining: $steps_remaining,
+                  next_liquidity_at: $next_at
+                }
+              }')")
+
+          MID=$(echo "$RESULT" | jq -r '.market_id')
+          echo "Created market ${MID}: ${CATEGORY_ID} (funded from treasury ${TREASURY_ACCOUNT_ID})"
+
+  pr-closed:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve open markets for PR
+        env:
+          ADMIN_KEY: ${{ secrets.FUTARCHY_ADMIN_KEY }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          MERGED="${{ github.event.pull_request.merged }}"
+          CATEGORY_PREFIX="${REPO}#${PR_NUM}"
+
+          if [ "$MERGED" = "true" ]; then
+            OUTCOME="yes"
+          else
+            OUTCOME="no"
+          fi
+
+          # Find all open markets for this PR (any date)
+          MARKETS=$(curl -sf "${API_URL}/v1/markets?category=pr_merge&category_id=$(jq -rn --arg v "$CATEGORY_PREFIX" '$v | @uri')&status=open")
+
+          echo "$MARKETS" | jq -r '.[].market_id' | while read -r MID; do
+            [ -z "$MID" ] && continue
+            echo "Resolving market ${MID} as ${OUTCOME}"
+            curl -sf "${API_URL}/v1/admin/markets/${MID}/resolve" \
+              -H "Authorization: Bearer ${ADMIN_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"outcome\": \"${OUTCOME}\"}"
+          done
