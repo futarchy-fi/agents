@@ -21,10 +21,10 @@ from httpx import ASGITransport, AsyncClient
 # Set admin key before importing app
 os.environ["FUTARCHY_ADMIN_KEY"] = "test-admin-key"
 os.environ["FUTARCHY_STATE"] = "/tmp/futarchy_test_state.json"
-os.environ["INITIAL_CREDITS"] = "1000"
 
 from core.api import app
 from core.auth import AuthStore
+from core.reputation import calculate_credits
 from core.middleware import rate_limiter, RateLimiter
 from core.models import reset_counters
 from core.risk_engine import RiskEngine
@@ -59,9 +59,15 @@ async def client():
 
 
 async def _mock_auth(client: AsyncClient, github_id=1,
-                     login="testuser") -> str:
+                     login="testuser", created_at="2020-01-01T00:00:00Z",
+                     public_repos=10, followers=5) -> str:
     """Helper: create a user via mocked GitHub and return the API key."""
-    mock_gh = AsyncMock(return_value={"id": github_id, "login": login})
+    mock_gh = AsyncMock(return_value={
+        "id": github_id, "login": login,
+        "created_at": created_at,
+        "public_repos": public_repos,
+        "followers": followers,
+    })
     with patch("core.api.validate_github_token", mock_gh):
         resp = await client.post("/v1/auth/github",
                                  json={"github_token": "ghp_fake"})
@@ -100,7 +106,8 @@ class TestAuth:
         resp = await client.get("/v1/me", headers=_user_headers(key))
         assert resp.status_code == 200
         data = resp.json()
-        assert data["available"] == "1000"
+        # Reputation-based credits (2020 account, 10 repos, 5 followers)
+        assert Decimal(data["available"]) >= 100
 
     async def test_reauth_rotates_key(self, client):
         key1 = await _mock_auth(client, github_id=42, login="octocat")
@@ -386,10 +393,11 @@ class TestTradingLifecycle:
         key = await _mock_auth(client)
         headers = _user_headers(key)
 
-        # Check balance
+        # Check balance (reputation-based credits)
         resp = await client.get("/v1/me", headers=headers)
         assert resp.status_code == 200
-        assert resp.json()["available"] == "1000"
+        initial_balance = Decimal(resp.json()["available"])
+        assert initial_balance >= 100
 
         # Buy YES
         resp = await client.post(f"/v1/markets/{mid}/buy", headers=headers,
@@ -403,7 +411,7 @@ class TestTradingLifecycle:
         # Check balance decreased
         resp = await client.get("/v1/me", headers=headers)
         data = resp.json()
-        assert Decimal(data["available"]) < Decimal("1000")
+        assert Decimal(data["available"]) < initial_balance
         assert Decimal(data["frozen"]) > 0
 
         # Sell half
@@ -566,11 +574,12 @@ class TestAdmin:
         key = await _mock_auth(client)
         me_resp = await client.get("/v1/me", headers=_user_headers(key))
         acct_id = me_resp.json()["account_id"]
+        before = Decimal(me_resp.json()["available"])
 
         resp = await client.post("/v1/admin/mint", headers=ADMIN_HEADERS,
                                  json={"account_id": acct_id, "amount": "500"})
         assert resp.status_code == 200
-        assert resp.json()["available"] == "1500"
+        assert Decimal(resp.json()["available"]) == before + 500
 
     async def test_create_market_custom_b(self, client):
         resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
@@ -864,3 +873,81 @@ class TestErrorFormat:
         assert "code" in data["error"]
         assert "message" in data["error"]
         assert "details" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# Reputation Credits
+# ---------------------------------------------------------------------------
+
+class TestReputationCredits:
+    def test_brand_new_account(self):
+        """Brand new bot account gets minimum credits."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        credits = calculate_credits(now, 0, 0)
+        assert credits == Decimal("100")
+
+    def test_new_dev(self):
+        """6-month-old account with a few repos."""
+        from datetime import datetime, timezone, timedelta
+        six_months_ago = (
+            datetime.now(timezone.utc) - timedelta(days=183)
+        ).isoformat()
+        credits = calculate_credits(six_months_ago, 3, 1)
+        assert Decimal("150") <= credits <= Decimal("300")
+
+    def test_active_dev(self):
+        """3-year-old account, active developer."""
+        from datetime import datetime, timezone, timedelta
+        three_years_ago = (
+            datetime.now(timezone.utc) - timedelta(days=3 * 365)
+        ).isoformat()
+        credits = calculate_credits(three_years_ago, 30, 15)
+        assert Decimal("700") <= credits <= Decimal("1100")
+
+    def test_veteran(self):
+        """10+ year account, prolific open source contributor."""
+        credits = calculate_credits("2012-01-01T00:00:00Z", 200, 1000)
+        # Caps: age=10yr*20=200, repos=100*1=100, followers=500*0.4=200
+        # score=500, credits=100+500*9.8=5000
+        assert credits == Decimal("5000")
+
+    def test_caps_applied(self):
+        """Values beyond caps don't increase credits."""
+        max_credits = calculate_credits("2010-01-01T00:00:00Z", 500, 2000)
+        assert max_credits == Decimal("5000")
+
+    async def test_auth_uses_reputation_credits(self, client):
+        """New user gets reputation-based credits, not flat amount."""
+        # New account (created today, 0 repos, 0 followers) → 100 credits
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        key = await _mock_auth(client, github_id=99, login="newbie",
+                               created_at=now, public_repos=0, followers=0)
+        resp = await client.get("/v1/me", headers=_user_headers(key))
+        assert resp.json()["available"] == "100"
+
+    async def test_veteran_auth_gets_more_credits(self, client):
+        """Veteran gets significantly more than minimum."""
+        key = await _mock_auth(client, github_id=100, login="veteran",
+                               created_at="2012-01-01T00:00:00Z",
+                               public_repos=200, followers=1000)
+        resp = await client.get("/v1/me", headers=_user_headers(key))
+        assert Decimal(resp.json()["available"]) == Decimal("5000")
+
+    async def test_reauth_no_remint(self, client):
+        """Re-auth doesn't give additional credits."""
+        key1 = await _mock_auth(client, github_id=101, login="user1",
+                                created_at="2018-01-01T00:00:00Z",
+                                public_repos=50, followers=100)
+        resp = await client.get("/v1/me", headers=_user_headers(key1))
+        balance1 = resp.json()["available"]
+
+        # Re-auth same user
+        key2 = await _mock_auth(client, github_id=101, login="user1",
+                                created_at="2018-01-01T00:00:00Z",
+                                public_repos=50, followers=100)
+        resp = await client.get("/v1/me", headers=_user_headers(key2))
+        balance2 = resp.json()["available"]
+
+        assert balance1 == balance2

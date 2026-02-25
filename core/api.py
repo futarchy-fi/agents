@@ -31,6 +31,7 @@ from core.auth import (
     AuthStore, validate_github_token,
     start_device_flow, poll_device_flow,
 )
+from core.reputation import calculate_credits
 from core.lmsr import max_loss, prices as lmsr_prices
 from core.market_engine import MarketEngine
 from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
@@ -40,7 +41,6 @@ from core.risk_engine import RiskEngine, InsufficientBalance
 
 
 STATE_PATH = os.environ.get("FUTARCHY_STATE", "./futarchy_state.json")
-INITIAL_CREDITS = Decimal(os.environ.get("INITIAL_CREDITS", "100"))
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 
 
@@ -111,10 +111,12 @@ async def auth_github(req: GitHubAuthRequest) -> AuthResponse:
             user, raw_key = auth_store.create_user(
                 gh["id"], gh["login"], existing.account_id)
         else:
-            # New user: create account, mint initial credits
+            # New user: create account, mint reputation-based credits
             acc = app.state.risk.create_account()
-            if INITIAL_CREDITS > ZERO:
-                app.state.risk.mint(acc.id, INITIAL_CREDITS)
+            credits = calculate_credits(
+                gh["created_at"], gh["public_repos"], gh["followers"])
+            if credits > ZERO:
+                app.state.risk.mint(acc.id, credits)
             user, raw_key = auth_store.create_user(
                 gh["id"], gh["login"], acc.id)
 
@@ -183,8 +185,10 @@ async def auth_device_poll(req: DeviceFlowPollRequest) -> AuthResponse:
                 gh["id"], gh["login"], existing.account_id)
         else:
             acc = app.state.risk.create_account()
-            if INITIAL_CREDITS > ZERO:
-                app.state.risk.mint(acc.id, INITIAL_CREDITS)
+            credits = calculate_credits(
+                gh["created_at"], gh["public_repos"], gh["followers"])
+            if credits > ZERO:
+                app.state.risk.mint(acc.id, credits)
             user, raw_key = auth_store.create_user(
                 gh["id"], gh["login"], acc.id)
 
