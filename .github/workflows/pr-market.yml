@@ -26,6 +26,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -z "$ADMIN_KEY" ] || [ -z "$TREASURY_ACCOUNT_ID" ]; then
+            echo "Skipping: FUTARCHY_ADMIN_KEY or FUTARCHY_TREASURY_ID secret not configured"
+            exit 0
+          fi
+
           PR_NUM="${{ github.event.pull_request.number }}"
           PR_TITLE="${{ github.event.pull_request.title }}"
           TODAY=$(date -u +%Y-%m-%d)
@@ -84,6 +89,11 @@ jobs:
         env:
           ADMIN_KEY: ${{ secrets.FUTARCHY_ADMIN_KEY }}
         run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "Skipping: FUTARCHY_ADMIN_KEY secret not configured"
+            exit 0
+          fi
+
           PR_NUM="${{ github.event.pull_request.number }}"
           MERGED="${{ github.event.pull_request.merged }}"
           CATEGORY_PREFIX="${REPO}#${PR_NUM}"

@@ -19,6 +19,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -z "$ADMIN_KEY" ] || [ -z "$TREASURY_ACCOUNT_ID" ]; then
+            echo "Skipping: FUTARCHY_ADMIN_KEY or FUTARCHY_TREASURY_ID secret not configured"
+            exit 0
+          fi
+
           NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "=== Liquidity ramp: ${NOW} ==="
 

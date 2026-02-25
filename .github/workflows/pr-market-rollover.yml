@@ -23,6 +23,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -z "$ADMIN_KEY" ] || [ -z "$TREASURY_ACCOUNT_ID" ]; then
+            echo "Skipping: FUTARCHY_ADMIN_KEY or FUTARCHY_TREASURY_ID secret not configured"
+            exit 0
+          fi
+
           TODAY=$(date -u +%Y-%m-%d)
           TOMORROW=$(date -u -d "+1 day" +%Y-%m-%d)
           DEADLINE="${TOMORROW}T00:00:00Z"
