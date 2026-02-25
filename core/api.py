@@ -86,6 +86,11 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 async def landing():
     return FileResponse(STATIC_DIR / "landing.html", media_type="text/html")
 
+@app.get("/install.sh")
+async def install_script():
+    return FileResponse(
+        STATIC_DIR / "install.sh", media_type="text/plain; charset=utf-8")
+
 @app.get("/v1/health")
 async def health() -> HealthResponse:
     return HealthResponse(
