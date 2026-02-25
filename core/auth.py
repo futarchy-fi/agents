@@ -103,7 +103,13 @@ async def validate_github_token(token: str) -> dict:
     if resp.status_code != 200:
         raise ValueError(f"github_api_error:{resp.status_code}")
     data = resp.json()
-    return {"id": data["id"], "login": data["login"]}
+    return {
+        "id": data["id"],
+        "login": data["login"],
+        "created_at": data.get("created_at", ""),
+        "public_repos": data.get("public_repos", 0),
+        "followers": data.get("followers", 0),
+    }
 
 
 async def start_device_flow(client_id: str) -> dict:
