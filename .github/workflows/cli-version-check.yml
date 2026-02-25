@@ -1,0 +1,45 @@
+name: CLI version bump check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if CLI files changed without version bump
+        run: |
+          # Get list of changed files vs previous commit
+          CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'cli/' || true)
+
+          if [ -z "$CHANGED" ]; then
+            echo "No cli/ changes — skipping."
+            exit 0
+          fi
+
+          echo "Changed CLI files:"
+          echo "$CHANGED"
+
+          # Check if version file was bumped
+          if echo "$CHANGED" | grep -q "cli/futarchy_cli/__init__.py"; then
+            # Verify the __version__ line actually changed
+            VERSION_DIFF=$(git diff HEAD~1 HEAD -- cli/futarchy_cli/__init__.py | grep '^[+-]__version__' || true)
+            if [ -n "$VERSION_DIFF" ]; then
+              echo ""
+              echo "Version was bumped:"
+              echo "$VERSION_DIFF"
+              exit 0
+            fi
+          fi
+
+          echo ""
+          echo "ERROR: cli/ files changed but __version__ in cli/futarchy_cli/__init__.py was not bumped."
+          echo "Please update __version__ before merging."
+          exit 1

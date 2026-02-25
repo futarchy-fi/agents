@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 
+from . import __version__
 from . import api as api_mod
 from . import auth
 from . import fmt
@@ -98,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
         prog="futarchy",
         description="Futarchy — prediction markets for code",
     )
+    parser.add_argument("--version", action="version",
+                        version=f"futarchy {__version__}")
     _add_global_args(parser)
     sub = parser.add_subparsers(dest="command")
 
