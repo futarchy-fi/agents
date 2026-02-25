@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Futarchy Markets</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #0d1117; color: #e6edf3; line-height: 1.5; }
+a { color: #58a6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono { font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; }
+
+.container { max-width: 960px; margin: 0 auto; padding: 16px; }
+header { display: flex; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid #30363d; margin-bottom: 24px; }
+header h1 { font-size: 20px; font-weight: 600; }
+header .subtitle { color: #8b949e; font-size: 14px; }
+
+/* Filter tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+.tab { padding: 6px 16px; border-radius: 6px; border: 1px solid #30363d; background: transparent; color: #8b949e; cursor: pointer; font-size: 14px; }
+.tab:hover { color: #e6edf3; border-color: #8b949e; }
+.tab.active { background: #21262d; color: #e6edf3; border-color: #58a6ff; }
+
+/* Market cards */
+.market-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; cursor: pointer; transition: border-color 0.15s; }
+.market-card:hover { border-color: #58a6ff; }
+.card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.card-question { font-size: 15px; font-weight: 500; flex: 1; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+.badge-open { background: #1f6f2b; color: #3fb950; }
+.badge-resolved { background: #1a3a5c; color: #58a6ff; }
+.badge-void { background: #3d1f1f; color: #f85149; }
+
+/* Price bar */
+.price-bar-container { margin-bottom: 8px; }
+.price-bar { display: flex; height: 28px; border-radius: 4px; overflow: hidden; font-size: 13px; font-weight: 600; }
+.price-yes { background: #238636; display: flex; align-items: center; justify-content: center; color: #fff; min-width: 36px; transition: width 0.3s ease; }
+.price-no { background: #da3633; display: flex; align-items: center; justify-content: center; color: #fff; min-width: 36px; transition: width 0.3s ease; }
+.price-labels { display: flex; justify-content: space-between; font-size: 12px; color: #8b949e; margin-top: 4px; }
+
+.card-footer { display: flex; gap: 16px; font-size: 13px; color: #8b949e; }
+
+/* Market detail */
+.back-link { display: inline-block; margin-bottom: 16px; font-size: 14px; color: #8b949e; }
+.back-link:hover { color: #e6edf3; }
+.detail-header { margin-bottom: 24px; }
+.detail-question { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+.detail-meta { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; color: #8b949e; }
+
+.price-display { display: flex; gap: 16px; margin-bottom: 24px; }
+.price-box { flex: 1; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; text-align: center; }
+.price-box.yes { border-color: #238636; }
+.price-box.no { border-color: #da3633; }
+.price-label { font-size: 14px; color: #8b949e; margin-bottom: 4px; }
+.price-value { font-size: 36px; font-weight: 700; font-family: 'SF Mono', monospace; }
+.price-value.yes { color: #3fb950; }
+.price-value.no { color: #f85149; }
+
+.section { margin-bottom: 24px; }
+.section-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #30363d; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; padding: 8px; color: #8b949e; font-weight: 500; border-bottom: 1px solid #30363d; }
+td { padding: 8px; border-bottom: 1px solid #21262d; }
+td.mono { font-family: 'SF Mono', monospace; font-size: 13px; }
+tr:hover { background: #1c2128; }
+
+.empty { color: #8b949e; font-style: italic; padding: 20px 0; text-align: center; }
+
+.resolution-banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-weight: 500; }
+.resolution-banner.yes { background: #1f6f2b33; border: 1px solid #238636; color: #3fb950; }
+.resolution-banner.no { background: #3d1f1f33; border: 1px solid #da3633; color: #f85149; }
+.resolution-banner.void { background: #3d1f1f33; border: 1px solid #6e4040; color: #f0883e; }
+
+.loading { text-align: center; padding: 40px; color: #8b949e; }
+.error-msg { text-align: center; padding: 40px; color: #f85149; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Futarchy</h1>
+    <span class="subtitle">Prediction Markets</span>
+  </header>
+  <div id="app"><div class="loading">Loading...</div></div>
+</div>
+
+<script>
+(function() {
+  const app = document.getElementById('app');
+  let pollTimer = null;
+  let currentFilter = 'open';
+
+  function route() {
+    clearInterval(pollTimer);
+    const hash = location.hash || '#/';
+    const marketMatch = hash.match(/^#\/market\/(\d+)$/);
+    if (marketMatch) {
+      renderMarketDetail(parseInt(marketMatch[1]));
+    } else {
+      renderMarketList();
+    }
+  }
+
+  async function api(path) {
+    const resp = await fetch('/v1' + path);
+    if (!resp.ok) throw new Error(`API ${resp.status}`);
+    return resp.json();
+  }
+
+  function pct(v) { return (parseFloat(v) * 100).toFixed(1); }
+  function fmtPrice(v) { return (parseFloat(v) * 100).toFixed(1) + '\u00a2'; }
+  function fmtVal(v) { return parseFloat(v).toFixed(2); }
+  function fmtTime(iso) {
+    if (!iso) return '\u2014';
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function badgeClass(status) {
+    return 'badge badge-' + status;
+  }
+
+  // --- Market List ---
+
+  async function renderMarketList() {
+    app.innerHTML = renderTabs() + '<div id="markets-area"><div class="loading">Loading markets...</div></div>';
+    bindTabs();
+    await fetchAndRenderMarkets();
+    pollTimer = setInterval(fetchAndRenderMarkets, 30000);
+  }
+
+  function renderTabs() {
+    return `<div class="tabs">
+      <button class="tab${currentFilter === 'open' ? ' active' : ''}" data-filter="open">Open</button>
+      <button class="tab${currentFilter === 'resolved' ? ' active' : ''}" data-filter="resolved">Resolved</button>
+      <button class="tab${currentFilter === 'all' ? ' active' : ''}" data-filter="all">All</button>
+    </div>`;
+  }
+
+  function bindTabs() {
+    document.querySelectorAll('.tab').forEach(t => {
+      t.onclick = () => {
+        currentFilter = t.dataset.filter;
+        document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+        t.classList.add('active');
+        fetchAndRenderMarkets();
+      };
+    });
+  }
+
+  async function fetchAndRenderMarkets() {
+    try {
+      const params = currentFilter !== 'all' ? '?status=' + currentFilter : '';
+      const markets = await api('/markets' + params);
+      const area = document.getElementById('markets-area');
+      if (!area) return;
+      if (markets.length === 0) {
+        area.innerHTML = '<div class="empty">No markets found.</div>';
+        return;
+      }
+      area.innerHTML = markets.map(m => {
+        const yesP = m.prices.yes ? parseFloat(m.prices.yes) : 0;
+        const noP = m.prices.no ? parseFloat(m.prices.no) : 0;
+        const yesPct = m.status === 'open' ? Math.max(yesP * 100, 5) : (m.resolution === 'yes' ? 100 : 0);
+        const noPct = m.status === 'open' ? Math.max(noP * 100, 5) : (m.resolution === 'no' ? 100 : 0);
+        return `<div class="market-card" onclick="location.hash='#/market/${m.market_id}'">
+          <div class="card-header">
+            <span class="card-question">${esc(m.question)}</span>
+            <span class="${badgeClass(m.status)}">${m.status}</span>
+          </div>
+          <div class="price-bar-container">
+            <div class="price-bar">
+              <div class="price-yes" style="width:${yesPct}%">${m.status === 'open' ? pct(m.prices.yes) + '%' : (m.resolution === 'yes' ? 'YES' : '')}</div>
+              <div class="price-no" style="width:${noPct}%">${m.status === 'open' ? pct(m.prices.no) + '%' : (m.resolution === 'no' ? 'NO' : '')}</div>
+            </div>
+            ${m.status === 'open' ? `<div class="price-labels"><span>Yes ${fmtPrice(m.prices.yes)}</span><span>No ${fmtPrice(m.prices.no)}</span></div>` : ''}
+          </div>
+          <div class="card-footer">
+            <span>${m.num_trades} trade${m.num_trades !== 1 ? 's' : ''}</span>
+            <span>${fmtTime(m.created_at)}</span>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      const area = document.getElementById('markets-area');
+      if (area) area.innerHTML = '<div class="error-msg">Failed to load markets. Retrying...</div>';
+    }
+  }
+
+  // --- Market Detail ---
+
+  async function renderMarketDetail(id) {
+    app.innerHTML = '<div class="loading">Loading market...</div>';
+    await fetchAndRenderDetail(id);
+    pollTimer = setInterval(() => fetchAndRenderDetail(id), 15000);
+  }
+
+  async function fetchAndRenderDetail(id) {
+    try {
+      const [m, trades, positions] = await Promise.all([
+        api('/markets/' + id),
+        api('/markets/' + id + '/trades'),
+        api('/markets/' + id + '/positions'),
+      ]);
+
+      const prUrl = m.metadata && m.metadata.pr_url;
+      const yesP = m.prices.yes ? parseFloat(m.prices.yes) : 0;
+      const noP = m.prices.no ? parseFloat(m.prices.no) : 0;
+
+      let resolution = '';
+      if (m.status === 'resolved') {
+        resolution = `<div class="resolution-banner ${m.resolution}">Resolved: <strong>${m.resolution.toUpperCase()}</strong>${m.resolved_at ? ' on ' + fmtTime(m.resolved_at) : ''}</div>`;
+      } else if (m.status === 'void') {
+        resolution = `<div class="resolution-banner void">Market voided</div>`;
+      }
+
+      app.innerHTML = `
+        <a class="back-link" href="#/">\u2190 All Markets</a>
+        <div class="detail-header">
+          <div class="detail-question">${esc(m.question)}</div>
+          <div class="detail-meta">
+            <span class="${badgeClass(m.status)}">${m.status}</span>
+            ${m.deadline ? `<span>Deadline: ${fmtTime(m.deadline)}</span>` : ''}
+            <span>Volume: <span class="mono">${fmtVal(m.volume)}</span></span>
+            <span>${m.num_trades} trade${m.num_trades !== 1 ? 's' : ''}</span>
+            ${prUrl ? `<a href="${esc(prUrl)}" target="_blank" rel="noopener">View PR</a>` : ''}
+          </div>
+        </div>
+
+        ${resolution}
+
+        ${m.status === 'open' ? `<div class="price-display">
+          <div class="price-box yes">
+            <div class="price-label">Yes</div>
+            <div class="price-value yes">${pct(m.prices.yes)}%</div>
+            <div class="price-label">${fmtPrice(m.prices.yes)}</div>
+          </div>
+          <div class="price-box no">
+            <div class="price-label">No</div>
+            <div class="price-value no">${pct(m.prices.no)}%</div>
+            <div class="price-label">${fmtPrice(m.prices.no)}</div>
+          </div>
+        </div>` : ''}
+
+        <div class="section">
+          <div class="section-title">Trades (${trades.length})</div>
+          ${trades.length === 0 ? '<div class="empty">No trades yet.</div>' : `<table>
+            <tr><th>ID</th><th>Outcome</th><th>Amount</th><th>Price</th><th>Value</th><th>Time</th></tr>
+            ${trades.slice().reverse().map(t => `<tr>
+              <td class="mono">${t.trade_id}</td>
+              <td><span style="color:${t.outcome === 'yes' ? '#3fb950' : '#f85149'}">${t.outcome}</span></td>
+              <td class="mono">${fmtVal(t.amount)}</td>
+              <td class="mono">${fmtPrice(t.price)}</td>
+              <td class="mono">${fmtVal(t.value)}</td>
+              <td>${fmtTime(t.created_at)}</td>
+            </tr>`).join('')}
+          </table>`}
+        </div>
+
+        <div class="section">
+          <div class="section-title">Positions (${positions.length})</div>
+          ${positions.length === 0 ? '<div class="empty">No positions.</div>' : `<table>
+            <tr><th>Account</th><th>Yes</th><th>No</th></tr>
+            ${positions.map(p => `<tr>
+              <td class="mono">${p.account_id}</td>
+              <td class="mono" style="color:#3fb950">${fmtVal(p.positions.yes || '0')}</td>
+              <td class="mono" style="color:#f85149">${fmtVal(p.positions.no || '0')}</td>
+            </tr>`).join('')}
+          </table>`}
+        </div>
+      `;
+    } catch (e) {
+      app.innerHTML = `<a class="back-link" href="#/">\u2190 All Markets</a><div class="error-msg">Market not found or failed to load.</div>`;
+    }
+  }
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  window.addEventListener('hashchange', route);
+  route();
+})();
+</script>
+</body>
+</html>
