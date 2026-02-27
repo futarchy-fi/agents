@@ -8,11 +8,14 @@ Covers:
 - Auth boundaries (no key, wrong key, admin key on user endpoints)
 - Admin operations
 - Rate limiting
+- Dashboard route integrity (static files and API path alignment)
 """
 
 import asyncio
 import os
+import re
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -864,3 +867,69 @@ class TestErrorFormat:
         assert "code" in data["error"]
         assert "message" in data["error"]
         assert "details" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# Dashboard & Static Files
+# ---------------------------------------------------------------------------
+
+class TestDashboard:
+    async def test_dashboard_route_serves_html(self, client):
+        """Dashboard route must return 200 with HTML content."""
+        resp = await client.get("/dashboard")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "Futarchy" in resp.text
+
+    async def test_landing_page_links_to_dashboard(self, client):
+        """Landing page must contain a link to the dashboard."""
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        assert "/dashboard" in resp.text
+
+    async def test_dashboard_api_paths_match_registered_routes(self, client):
+        """Every fetch() path in dashboard.html must correspond to a real API route.
+
+        This prevents the dashboard from silently breaking when API routes
+        are renamed or prefixed (the exact bug from PR #8 → v1 migration).
+        """
+        static_dir = Path(__file__).resolve().parent.parent / "static"
+        dashboard_html = (static_dir / "dashboard.html").read_text()
+
+        # Extract all paths from fetch('/v1' + path) calls.
+        # The dashboard uses: api('/markets' + params), api('/markets/' + id), etc.
+        # The api() function prepends '/v1', so effective paths are /v1/markets, etc.
+        # We extract the path fragments passed to api() and prepend /v1.
+        api_calls = re.findall(r"api\(['\"]([^'\"]+)['\"]", dashboard_html)
+        # Also catch template-literal patterns like api('/markets/' + id)
+        api_calls += re.findall(r"api\(['\"/]([^'\"+ )]+)", dashboard_html)
+
+        # Normalize: strip leading slash, dedupe
+        raw_paths = set()
+        for p in api_calls:
+            p = p.lstrip("/")
+            raw_paths.add(p)
+
+        # Build the set of registered route path templates (strip /v1 prefix for comparison)
+        registered = set()
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            if path.startswith("/v1/"):
+                # Normalize path params: /markets/{market_id} → /markets/
+                normalized = re.sub(r"\{[^}]+\}", "", path[4:]).rstrip("/")
+                registered.add(normalized)
+
+        # Each dashboard API path (after stripping dynamic suffixes) must match
+        missing = []
+        for raw in raw_paths:
+            # Strip trailing dynamic parts: '/markets/' + id → 'markets'
+            base = raw.split("?")[0].rstrip("/")
+            # Remove trailing path segments that look dynamic (numbers)
+            base = re.sub(r"/\d+.*", "", base)
+            if base and base not in registered:
+                missing.append(f"/v1/{raw}")
+
+        assert not missing, (
+            f"Dashboard fetches API paths that don't exist as routes: {missing}. "
+            f"Registered /v1 routes: {sorted('/v1/' + r for r in registered)}"
+        )
