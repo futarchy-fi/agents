@@ -27,16 +27,19 @@ header .subtitle { color: #8b949e; font-size: 14px; }
 .market-card:hover { border-color: #58a6ff; }
 .card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
 .card-question { font-size: 15px; font-weight: 500; flex: 1; }
+.card-badges { display: flex; gap: 6px; flex-shrink: 0; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
 .badge-open { background: #1f6f2b; color: #3fb950; }
 .badge-resolved { background: #1a3a5c; color: #58a6ff; }
-.badge-void { background: #3d1f1f; color: #f85149; }
+.badge-void { background: #3d2e1f; color: #f0883e; }
+.badge-conditional { background: #1a1a2e; color: #b388ff; border: 1px solid #4a3a6e; }
 
 /* Price bar */
 .price-bar-container { margin-bottom: 8px; }
 .price-bar { display: flex; height: 28px; border-radius: 4px; overflow: hidden; font-size: 13px; font-weight: 600; }
 .price-yes { background: #238636; display: flex; align-items: center; justify-content: center; color: #fff; min-width: 36px; transition: width 0.3s ease; }
 .price-no { background: #da3633; display: flex; align-items: center; justify-content: center; color: #fff; min-width: 36px; transition: width 0.3s ease; }
+.price-void { background: #6e4020; display: flex; align-items: center; justify-content: center; color: #f0883e; width: 100%; }
 .price-labels { display: flex; justify-content: space-between; font-size: 12px; color: #8b949e; margin-top: 4px; }
 
 .card-footer { display: flex; gap: 16px; font-size: 13px; color: #8b949e; }
@@ -46,7 +49,7 @@ header .subtitle { color: #8b949e; font-size: 14px; }
 .back-link:hover { color: #e6edf3; }
 .detail-header { margin-bottom: 24px; }
 .detail-question { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
-.detail-meta { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; color: #8b949e; }
+.detail-meta { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; color: #8b949e; align-items: center; }
 
 .price-display { display: flex; gap: 16px; margin-bottom: 24px; }
 .price-box { flex: 1; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; text-align: center; }
@@ -71,7 +74,15 @@ tr:hover { background: #1c2128; }
 .resolution-banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-weight: 500; }
 .resolution-banner.yes { background: #1f6f2b33; border: 1px solid #238636; color: #3fb950; }
 .resolution-banner.no { background: #3d1f1f33; border: 1px solid #da3633; color: #f85149; }
-.resolution-banner.void { background: #3d1f1f33; border: 1px solid #6e4040; color: #f0883e; }
+.resolution-banner.void { background: #3d2e1f33; border: 1px solid #6e4020; color: #f0883e; }
+
+.rules-box { background: #1a1a2e; border: 1px solid #4a3a6e; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; font-size: 13px; color: #c0b0e0; }
+.rules-box strong { color: #b388ff; }
+.rules-box .rule-row { display: flex; gap: 8px; margin-top: 6px; }
+.rules-box .rule-label { font-weight: 600; min-width: 50px; }
+.rules-box .rule-yes { color: #3fb950; }
+.rules-box .rule-no { color: #f85149; }
+.rules-box .rule-void { color: #f0883e; }
 
 .loading { text-align: center; padding: 40px; color: #8b949e; }
 .error-msg { text-align: center; padding: 40px; color: #f85149; }
@@ -112,10 +123,18 @@ tr:hover { background: #1c2128; }
   function pct(v) { return (parseFloat(v) * 100).toFixed(1); }
   function fmtPrice(v) { return (parseFloat(v) * 100).toFixed(1) + '\u00a2'; }
   function fmtVal(v) { return parseFloat(v).toFixed(2); }
+  function fmtDate(iso) {
+    if (!iso) return '\u2014';
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
   function fmtTime(iso) {
     if (!iso) return '\u2014';
     const d = new Date(iso);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+  function isConditional(m) {
+    return m.metadata && m.metadata.market_type === 'conditional';
   }
 
   function badgeClass(status) {
@@ -163,22 +182,39 @@ tr:hover { background: #1c2128; }
       area.innerHTML = markets.map(m => {
         const yesP = m.prices.yes ? parseFloat(m.prices.yes) : 0;
         const noP = m.prices.no ? parseFloat(m.prices.no) : 0;
+        const isVoid = m.status === 'void';
         const yesPct = m.status === 'open' ? Math.max(yesP * 100, 5) : (m.resolution === 'yes' ? 100 : 0);
         const noPct = m.status === 'open' ? Math.max(noP * 100, 5) : (m.resolution === 'no' ? 100 : 0);
+        const conditional = isConditional(m);
+
+        let priceBar;
+        if (isVoid) {
+          priceBar = `<div class="price-bar"><div class="price-void">VOID \u2014 positions refunded</div></div>`;
+        } else if (m.status === 'open') {
+          priceBar = `<div class="price-bar">
+            <div class="price-yes" style="width:${yesPct}%">${pct(m.prices.yes)}%</div>
+            <div class="price-no" style="width:${noPct}%">${pct(m.prices.no)}%</div>
+          </div>
+          <div class="price-labels"><span>Yes ${fmtPrice(m.prices.yes)}</span><span>No ${fmtPrice(m.prices.no)}</span></div>`;
+        } else {
+          priceBar = `<div class="price-bar">
+            <div class="price-yes" style="width:${yesPct}%">${m.resolution === 'yes' ? 'YES' : ''}</div>
+            <div class="price-no" style="width:${noPct}%">${m.resolution === 'no' ? 'NO' : ''}</div>
+          </div>`;
+        }
+
         return `<div class="market-card" onclick="location.hash='#/market/${m.market_id}'">
           <div class="card-header">
             <span class="card-question">${esc(m.question)}</span>
-            <span class="${badgeClass(m.status)}">${m.status}</span>
-          </div>
-          <div class="price-bar-container">
-            <div class="price-bar">
-              <div class="price-yes" style="width:${yesPct}%">${m.status === 'open' ? pct(m.prices.yes) + '%' : (m.resolution === 'yes' ? 'YES' : '')}</div>
-              <div class="price-no" style="width:${noPct}%">${m.status === 'open' ? pct(m.prices.no) + '%' : (m.resolution === 'no' ? 'NO' : '')}</div>
+            <div class="card-badges">
+              ${conditional ? '<span class="badge badge-conditional">Conditional</span>' : ''}
+              <span class="${badgeClass(m.status)}">${m.status}</span>
             </div>
-            ${m.status === 'open' ? `<div class="price-labels"><span>Yes ${fmtPrice(m.prices.yes)}</span><span>No ${fmtPrice(m.prices.no)}</span></div>` : ''}
           </div>
+          <div class="price-bar-container">${priceBar}</div>
           <div class="card-footer">
             <span>${m.num_trades} trade${m.num_trades !== 1 ? 's' : ''}</span>
+            ${m.status === 'open' && m.deadline ? `<span>Closes ${fmtDate(m.deadline)}</span>` : ''}
             <span>${fmtTime(m.created_at)}</span>
           </div>
         </div>`;
@@ -206,14 +242,24 @@ tr:hover { background: #1c2128; }
       ]);
 
       const prUrl = m.metadata && m.metadata.pr_url;
-      const yesP = m.prices.yes ? parseFloat(m.prices.yes) : 0;
-      const noP = m.prices.no ? parseFloat(m.prices.no) : 0;
+      const conditional = isConditional(m);
+      const rules = m.metadata && m.metadata.resolution_rules;
 
       let resolution = '';
       if (m.status === 'resolved') {
         resolution = `<div class="resolution-banner ${m.resolution}">Resolved: <strong>${m.resolution.toUpperCase()}</strong>${m.resolved_at ? ' on ' + fmtTime(m.resolved_at) : ''}</div>`;
       } else if (m.status === 'void') {
-        resolution = `<div class="resolution-banner void">Market voided</div>`;
+        resolution = `<div class="resolution-banner void">Market voided \u2014 all positions refunded${m.resolved_at ? ' on ' + fmtTime(m.resolved_at) : ''}</div>`;
+      }
+
+      let rulesBox = '';
+      if (conditional) {
+        rulesBox = `<div class="rules-box">
+          <strong>Conditional Market</strong>${m.deadline ? ' \u2014 closes ' + fmtDate(m.deadline) : ''}
+          <div class="rule-row"><span class="rule-label rule-yes">YES</span> PR is merged</div>
+          <div class="rule-row"><span class="rule-label rule-no">NO</span> PR is closed without merge</div>
+          <div class="rule-row"><span class="rule-label rule-void">VOID</span> Deadline expires with no resolution \u2014 positions refunded</div>
+        </div>`;
       }
 
       app.innerHTML = `
@@ -221,8 +267,9 @@ tr:hover { background: #1c2128; }
         <div class="detail-header">
           <div class="detail-question">${esc(m.question)}</div>
           <div class="detail-meta">
+            ${conditional ? '<span class="badge badge-conditional">Conditional</span>' : ''}
             <span class="${badgeClass(m.status)}">${m.status}</span>
-            ${m.deadline ? `<span>Deadline: ${fmtTime(m.deadline)}</span>` : ''}
+            ${m.status === 'open' && m.deadline ? `<span>Closes ${fmtDate(m.deadline)}</span>` : ''}
             <span>Volume: <span class="mono">${fmtVal(m.volume)}</span></span>
             <span>${m.num_trades} trade${m.num_trades !== 1 ? 's' : ''}</span>
             ${prUrl ? `<a href="${esc(prUrl)}" target="_blank" rel="noopener">View PR</a>` : ''}
@@ -230,6 +277,7 @@ tr:hover { background: #1c2128; }
         </div>
 
         ${resolution}
+        ${rulesBox}
 
         ${m.status === 'open' ? `<div class="price-display">
           <div class="price-box yes">

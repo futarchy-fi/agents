@@ -41,10 +41,11 @@ jobs:
           # First ramp top-up is 30 min from now
           NEXT_LIQUIDITY=$(date -u -d "+${LIQUIDITY_RAMP_INTERVAL_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
 
-          QUESTION="Will PR #${PR_NUM} '${PR_TITLE}' merge by ${DEADLINE}?"
+          QUESTION="Will PR #${PR_NUM} '${PR_TITLE}' merge?"
           CATEGORY_ID="${REPO}#${PR_NUM}@${TODAY}"
 
-          # Create market with initial funding from treasury
+          # Create conditional market with initial funding from treasury.
+          # Resolution rules: YES=merged, NO=closed-without-merge, VOID=deadline expired.
           RESULT=$(curl -sf "${API_URL}/v1/admin/markets" \
             -H "Authorization: Bearer ${ADMIN_KEY}" \
             -H "Content-Type: application/json" \
@@ -68,9 +69,11 @@ jobs:
                 funding_account_id: $funding_acct,
                 deadline: $dl,
                 metadata: {
+                  market_type: "conditional",
                   pr_number: $pr_num,
                   pr_url: $pr_url,
                   repo: "'"${REPO}"'",
+                  resolution_rules: "YES if merged, NO if closed without merge, VOID if deadline expires",
                   liquidity_budget: $budget,
                   liquidity_step: $step,
                   liquidity_steps_remaining: $steps_remaining,

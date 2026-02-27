@@ -70,7 +70,7 @@ jobs:
             COUNT=$(echo "$EXISTING" | jq 'length')
 
             if [ "$COUNT" -eq 0 ]; then
-              QUESTION="Will PR #${PR_NUM} '${PR_TITLE}' merge by ${DEADLINE}?"
+              QUESTION="Will PR #${PR_NUM} '${PR_TITLE}' merge?"
 
               echo "Creating market for PR #${PR_NUM}: ${CATEGORY_ID} (full budget: ${LIQUIDITY_BUDGET}, treasury: ${TREASURY_ACCOUNT_ID})"
               curl -sf "${API_URL}/v1/admin/markets" \
@@ -90,7 +90,12 @@ jobs:
                     funding: $funding,
                     funding_account_id: $funding_acct,
                     deadline: $dl,
-                    metadata: {pr_number: $pr_num, repo: "'"${REPO}"'"}
+                    metadata: {
+                      market_type: "conditional",
+                      pr_number: $pr_num,
+                      repo: "'"${REPO}"'",
+                      resolution_rules: "YES if merged, NO if closed without merge, VOID if deadline expires"
+                    }
                   }')"
             else
               echo "Market already exists for PR #${PR_NUM} today"
