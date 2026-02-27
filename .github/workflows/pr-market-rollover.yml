@@ -35,7 +35,11 @@ jobs:
 
           echo "=== Rollover: ${TODAY} ==="
 
-          # Step 1: Resolve all open pr_merge markets whose deadline has passed
+          # Step 1: Void all open pr_merge markets whose deadline has passed.
+          # These are conditional markets — they should only resolve YES (merged)
+          # or NO (closed without merge) based on the actual PR outcome.
+          # Deadline expiry means the observation window closed with no
+          # definitive outcome, so we void and refund all positions.
           OPEN_MARKETS=$(curl -sf "${API_URL}/v1/markets?category=pr_merge&status=open")
 
           echo "$OPEN_MARKETS" | jq -c '.[]' | while read -r MARKET; do
@@ -47,11 +51,9 @@ jobs:
             MARKET_DEADLINE=$(echo "$DETAIL" | jq -r '.deadline // empty')
 
             if [ -n "$MARKET_DEADLINE" ] && [[ "$MARKET_DEADLINE" < "$NOW" || "$MARKET_DEADLINE" == "$NOW" ]]; then
-              echo "Resolving expired market ${MID} (${CID}) as NO"
-              curl -sf "${API_URL}/v1/admin/markets/${MID}/resolve" \
-                -H "Authorization: Bearer ${ADMIN_KEY}" \
-                -H "Content-Type: application/json" \
-                -d '{"outcome": "no"}'
+              echo "Voiding expired market ${MID} (${CID}) — deadline passed without PR resolution"
+              curl -sf -X POST "${API_URL}/v1/admin/markets/${MID}/void" \
+                -H "Authorization: Bearer ${ADMIN_KEY}"
             fi
           done
 

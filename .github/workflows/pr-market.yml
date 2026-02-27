@@ -94,6 +94,11 @@ jobs:
             exit 0
           fi
 
+          # Conditional market resolution rules:
+          #   merged  → resolve YES (all open markets for this PR, any date)
+          #   closed  → resolve NO  (all open markets for this PR, any date)
+          #   expired → void        (handled by rollover workflow, not here)
+
           PR_NUM="${{ github.event.pull_request.number }}"
           MERGED="${{ github.event.pull_request.merged }}"
           CATEGORY_PREFIX="${REPO}#${PR_NUM}"
