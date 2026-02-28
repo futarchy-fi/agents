@@ -65,15 +65,16 @@ class MarketSummary(BaseModel):
     outcomes: list[str]
     prices: dict[str, str]
     b: str
+    liquidity: str  # max market maker loss = b * ln(n), the funding amount
     num_trades: int
     resolution: str | None
     created_at: str
+    deadline: str | None = None
 
 class MarketDetail(MarketSummary):
     amm_account_id: int
     q: dict[str, str]
     volume: str
-    deadline: str | None
     resolved_at: str | None
     metadata: dict
 

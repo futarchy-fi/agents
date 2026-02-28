@@ -84,6 +84,21 @@ tr:hover { background: #1c2128; }
 .rules-box .rule-no { color: #f85149; }
 .rules-box .rule-void { color: #f0883e; }
 
+/* Depth table */
+.depth-table { margin-top: 8px; }
+.depth-table td.cost { color: #58a6ff; }
+
+/* Collapsible LMSR reference */
+details.lmsr-ref { margin-bottom: 24px; }
+details.lmsr-ref summary { cursor: pointer; color: #8b949e; font-size: 13px; padding: 8px 0; }
+details.lmsr-ref summary:hover { color: #e6edf3; }
+details.lmsr-ref .ref-content { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; font-size: 13px; color: #8b949e; margin-top: 8px; }
+details.lmsr-ref .ref-content h4 { color: #e6edf3; margin: 12px 0 6px; font-size: 14px; }
+details.lmsr-ref .ref-content h4:first-child { margin-top: 0; }
+details.lmsr-ref .ref-content code { color: #58a6ff; background: #0d1117; padding: 1px 5px; border-radius: 3px; }
+details.lmsr-ref .ref-content .formula { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 8px 12px; margin: 6px 0; font-family: 'SF Mono', monospace; font-size: 12px; color: #e6edf3; overflow-x: auto; }
+details.lmsr-ref .ref-content p { margin: 4px 0; }
+
 .loading { text-align: center; padding: 40px; color: #8b949e; }
 .error-msg { text-align: center; padding: 40px; color: #f85149; }
 </style>
@@ -123,6 +138,7 @@ tr:hover { background: #1c2128; }
   function pct(v) { return (parseFloat(v) * 100).toFixed(1); }
   function fmtPrice(v) { return (parseFloat(v) * 100).toFixed(1) + '\u00a2'; }
   function fmtVal(v) { return parseFloat(v).toFixed(2); }
+  function fmtCurrency(v) { return '$' + parseFloat(v).toFixed(0); }
   function fmtDate(iso) {
     if (!iso) return '\u2014';
     const d = new Date(iso);
@@ -136,9 +152,54 @@ tr:hover { background: #1c2128; }
   function isConditional(m) {
     return m.metadata && m.metadata.market_type === 'conditional';
   }
-
   function badgeClass(status) {
     return 'badge badge-' + status;
+  }
+
+  // --- LMSR math (client-side, for depth table) ---
+
+  function lmsrPriceImpact(b, refAmount) {
+    // Price impact of buying refAmount of YES starting from 50/50
+    // d = b * ln(2 * exp(refAmount/b) - 1)
+    var bf = parseFloat(b);
+    var d = bf * Math.log(2 * Math.exp(refAmount / bf) - 1);
+    var priceAfter = Math.exp(d / bf) / (Math.exp(d / bf) + 1);
+    return (priceAfter - 0.5) / 0.5;
+  }
+
+  function liquidityLabel(b, n) {
+    var impact = lmsrPriceImpact(b, 10); // $10 reference trade
+    if (impact < 0.005) return { label: 'Deep', color: '#3fb950' };
+    if (impact < 0.02)  return { label: 'Moderate', color: '#f0883e' };
+    if (impact < 0.10)  return { label: 'Thin', color: '#f85149' };
+    return { label: 'Very Thin', color: '#da3633' };
+  }
+
+  function depthTable(b, q) {
+    // Compute cost to move YES price to target probabilities
+    var bf = parseFloat(b);
+    var qy = parseFloat(q.yes || '0');
+    var qn = parseFloat(q.no || '0');
+    var targets = [0.6, 0.7, 0.8, 0.9, 0.95];
+    var rows = [];
+    for (var i = 0; i < targets.length; i++) {
+      var tp = targets[i];
+      // delta_q = b * ln(tp / (1-tp)) + qn - qy  (for normalized)
+      var mn = Math.min(qy, qn);
+      var qyn = qy - mn;
+      var qnn = qn - mn;
+      var othersSum = Math.exp(qnn / bf);
+      var ratio = tp * othersSum / (1 - tp);
+      var qNewNorm = bf * Math.log(ratio);
+      var deltaQ = qNewNorm - qyn;
+      if (deltaQ <= 0) continue;
+      // cost = b * ln(exp((qyn+deltaQ)/bf) + exp(qnn/bf)) - b * ln(exp(qyn/bf) + exp(qnn/bf))
+      var costAfter = bf * Math.log(Math.exp((qyn + deltaQ) / bf) + Math.exp(qnn / bf));
+      var costBefore = bf * Math.log(Math.exp(qyn / bf) + Math.exp(qnn / bf));
+      var cost = costAfter - costBefore;
+      rows.push({ target: (tp * 100).toFixed(0) + '%', cost: cost.toFixed(2), shares: deltaQ.toFixed(1) });
+    }
+    return rows;
   }
 
   // --- Market List ---
@@ -186,6 +247,7 @@ tr:hover { background: #1c2128; }
         const yesPct = m.status === 'open' ? Math.max(yesP * 100, 5) : (m.resolution === 'yes' ? 100 : 0);
         const noPct = m.status === 'open' ? Math.max(noP * 100, 5) : (m.resolution === 'no' ? 100 : 0);
         const conditional = isConditional(m);
+        const liq = liquidityLabel(m.b, m.outcomes.length);
 
         let priceBar;
         if (isVoid) {
@@ -214,8 +276,8 @@ tr:hover { background: #1c2128; }
           <div class="price-bar-container">${priceBar}</div>
           <div class="card-footer">
             <span>${m.num_trades} trade${m.num_trades !== 1 ? 's' : ''}</span>
+            <span>Liquidity: ${fmtCurrency(m.liquidity)}</span>
             ${m.status === 'open' && m.deadline ? `<span>Closes ${fmtDate(m.deadline)}</span>` : ''}
-            <span>${fmtTime(m.created_at)}</span>
           </div>
         </div>`;
       }).join('');
@@ -243,7 +305,6 @@ tr:hover { background: #1c2128; }
 
       const prUrl = m.metadata && m.metadata.pr_url;
       const conditional = isConditional(m);
-      const rules = m.metadata && m.metadata.resolution_rules;
 
       let resolution = '';
       if (m.status === 'resolved') {
@@ -262,6 +323,59 @@ tr:hover { background: #1c2128; }
         </div>`;
       }
 
+      // Depth table for open markets
+      let depthSection = '';
+      if (m.status === 'open') {
+        const rows = depthTable(m.b, m.q);
+        if (rows.length > 0) {
+          depthSection = `<div class="section">
+            <div class="section-title">Market Depth</div>
+            <p style="font-size:13px;color:#8b949e;margin-bottom:12px">Cost to move the YES price to a target probability.</p>
+            <table class="depth-table">
+              <tr><th>Target</th><th>Cost</th><th>Shares</th></tr>
+              ${rows.map(r => `<tr>
+                <td class="mono">${r.target}</td>
+                <td class="mono cost">$${r.cost}</td>
+                <td class="mono">${r.shares}</td>
+              </tr>`).join('')}
+            </table>
+          </div>`;
+        }
+      }
+
+      // LMSR reference (collapsible)
+      const lmsrRef = `<details class="lmsr-ref">
+        <summary>LMSR Reference \u2014 how this market works</summary>
+        <div class="ref-content">
+          <h4>Cost Function</h4>
+          <div class="formula">C(q) = b \u00b7 ln( \u03a3 e^(q\u1d62 / b) )</div>
+          <p>The total amount collected by the market maker. Trading costs are <code>C(after) \u2212 C(before)</code>.</p>
+
+          <h4>Prices (Probabilities)</h4>
+          <div class="formula">p\u1d62 = e^(q\u1d62 / b) / \u03a3 e^(q\u2c7c / b)</div>
+          <p>Softmax over quantities. Always sum to 1.</p>
+
+          <h4>Liquidity Parameter (b)</h4>
+          <div class="formula">b = ${fmtVal(m.b)}</div>
+          <p>Controls market depth. Higher <code>b</code> = more capital needed to move prices. A $10 trade at 50/50 moves the price by ${(lmsrPriceImpact(m.b, 10) * 100).toFixed(2)}%.</p>
+
+          <h4>Max Market Maker Loss</h4>
+          <div class="formula">max loss = b \u00b7 ln(n) = ${fmtVal(m.b)} \u00b7 ln(${m.outcomes.length}) = $${fmtVal(m.liquidity)}</div>
+          <p>The funding required to create this market. This is a fixed bound \u2014 the AMM can never lose more than this, regardless of how the market trades. The bound holds because LMSR is a reversible market maker: any trade can be undone, so the worst case never changes.</p>
+
+          <h4>This Market</h4>
+          <table>
+            <tr><td style="color:#8b949e;width:140px">Liquidity (b)</td><td class="mono">${fmtVal(m.b)}</td></tr>
+            <tr><td style="color:#8b949e">Funding / Max Loss</td><td class="mono">$${fmtVal(m.liquidity)}</td></tr>
+            <tr><td style="color:#8b949e">Outcomes</td><td class="mono">${m.outcomes.length} (${m.outcomes.join(', ')})</td></tr>
+            <tr><td style="color:#8b949e">AMM Account</td><td class="mono">#${m.amm_account_id}</td></tr>
+            ${Object.keys(m.q).map(o => `<tr><td style="color:#8b949e">q[${o}]</td><td class="mono">${fmtVal(m.q[o])}</td></tr>`).join('')}
+          </table>
+        </div>
+      </details>`;
+
+      const liq = liquidityLabel(m.b, m.outcomes.length);
+
       app.innerHTML = `
         <a class="back-link" href="#/">\u2190 All Markets</a>
         <div class="detail-header">
@@ -270,6 +384,7 @@ tr:hover { background: #1c2128; }
             ${conditional ? '<span class="badge badge-conditional">Conditional</span>' : ''}
             <span class="${badgeClass(m.status)}">${m.status}</span>
             ${m.status === 'open' && m.deadline ? `<span>Closes ${fmtDate(m.deadline)}</span>` : ''}
+            <span>Liquidity: ${fmtCurrency(m.liquidity)} <span style="color:${liq.color}">(${liq.label})</span></span>
             <span>Volume: <span class="mono">${fmtVal(m.volume)}</span></span>
             <span>${m.num_trades} trade${m.num_trades !== 1 ? 's' : ''}</span>
             ${prUrl ? `<a href="${esc(prUrl)}" target="_blank" rel="noopener">View PR</a>` : ''}
@@ -291,6 +406,8 @@ tr:hover { background: #1c2128; }
             <div class="price-label">${fmtPrice(m.prices.no)}</div>
           </div>
         </div>` : ''}
+
+        ${depthSection}
 
         <div class="section">
           <div class="section-title">Trades (${trades.length})</div>
@@ -318,6 +435,8 @@ tr:hover { background: #1c2128; }
             </tr>`).join('')}
           </table>`}
         </div>
+
+        ${lmsrRef}
       `;
     } catch (e) {
       app.innerHTML = `<a class="back-link" href="#/">\u2190 All Markets</a><div class="error-msg">Market not found or failed to load.</div>`;

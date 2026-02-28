@@ -282,9 +282,11 @@ async def list_markets(
             outcomes=m.outcomes,
             prices={o: str(v) for o, v in p.items()},
             b=str(m.b),
+            liquidity=str(max_loss(m.b, len(m.outcomes))),
             num_trades=len(m.trades),
             resolution=m.resolution,
             created_at=m.created_at,
+            deadline=m.deadline,
         ))
     return result
 
@@ -310,13 +312,14 @@ async def get_market(market_id: int) -> MarketDetail:
         outcomes=m.outcomes,
         prices={o: str(v) for o, v in p.items()},
         b=str(m.b),
+        liquidity=str(max_loss(m.b, len(m.outcomes))),
         num_trades=len(m.trades),
         resolution=m.resolution,
         created_at=m.created_at,
+        deadline=m.deadline,
         amm_account_id=m.amm_account_id,
         q={o: str(v) for o, v in m.q.items()},
         volume=str(volume),
-        deadline=m.deadline,
         resolved_at=m.resolved_at,
         metadata=m.metadata,
     )
