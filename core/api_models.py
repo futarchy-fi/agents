@@ -79,6 +79,16 @@ class MarketDetail(MarketSummary):
     resolved_at: str | None
     metadata: dict
 
+class DepthEntry(BaseModel):
+    target: str       # e.g. "60%"
+    outcome: str      # e.g. "yes"
+    cost: str         # credits to reach target
+    shares: str       # tokens to buy
+
+class DepthResponse(BaseModel):
+    market_id: int
+    rows: list[DepthEntry]
+
 class PositionEntry(BaseModel):
     account_id: int
     positions: dict[str, str]

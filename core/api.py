@@ -22,6 +22,7 @@ from core.api_models import (
     DeviceFlowStartRequest, DeviceFlowResponse, DeviceFlowPollRequest,
     AccountResponse, LockResponse,
     MarketSummary, MarketDetail, PositionEntry, TradeResponse,
+    DepthEntry, DepthResponse,
     BuyRequest, SellRequest, TradeResult,
     CreateAccountResponse,
     MintRequest, MintResponse,
@@ -34,7 +35,7 @@ from core.auth import (
     AuthStore, validate_github_token,
     start_device_flow, poll_device_flow,
 )
-from core.lmsr import max_loss, prices as lmsr_prices
+from core.lmsr import max_loss, prices as lmsr_prices, cost_to_move_price
 from core.market_engine import MarketEngine
 from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
 from core.models import ZERO, reset_counters
@@ -355,6 +356,39 @@ async def get_market_positions(market_id: int) -> list[PositionEntry]:
             locks=locks,
         ))
     return result
+
+
+@app.get("/v1/markets/{market_id}/depth")
+async def get_market_depth(market_id: int) -> DepthResponse:
+    """Synthetic depth table: cost to move each outcome to target prices.
+
+    Computed server-side from the LMSR cost function with exact Decimal math.
+    Only available for open markets.
+    """
+    m = app.state.me.markets.get(market_id)
+    if m is None:
+        raise APIError(404, "market_not_found", f"Market {market_id} not found")
+    if m.status != "open":
+        return DepthResponse(market_id=m.id, rows=[])
+
+    targets = [Decimal("0.6"), Decimal("0.7"), Decimal("0.8"),
+               Decimal("0.9"), Decimal("0.95")]
+    rows = []
+    for outcome in m.outcomes:
+        for tp in targets:
+            try:
+                amount, trade_cost = cost_to_move_price(m.q, m.b, outcome, tp)
+            except (ValueError, ZeroDivisionError):
+                continue
+            if amount <= ZERO:
+                continue
+            rows.append(DepthEntry(
+                target=f"{int(tp * 100)}%",
+                outcome=outcome,
+                cost=str(trade_cost),
+                shares=str(amount),
+            ))
+    return DepthResponse(market_id=m.id, rows=rows)
 
 
 @app.get("/v1/markets/{market_id}/trades")
