@@ -138,8 +138,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   function pct(v) { return (parseFloat(v) * 100).toFixed(1); }
   function fmtPrice(v) { return (parseFloat(v) * 100).toFixed(1) + '\u00a2'; }
   function fmtVal(v) { return parseFloat(v).toFixed(2); }
-  function fmtCr(v) { return parseFloat(v).toFixed(0) + ' cr'; }
-  function fmtCrLong(v) { return parseFloat(v).toFixed(0) + ' credits'; }
+  function fmtCredits(v) { return parseFloat(v).toFixed(0); }
   function fmtDate(iso) {
     if (!iso) return '\u2014';
     const d = new Date(iso);
@@ -250,7 +249,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
           <div class="price-bar-container">${priceBar}</div>
           <div class="card-footer">
             <span>${m.num_trades} trade${m.num_trades !== 1 ? 's' : ''}</span>
-            <span>Liquidity: ${fmtCr(m.liquidity)}</span>
+            <span>Liquidity: ${fmtCredits(m.liquidity)} credits</span>
             ${m.status === 'open' && m.deadline ? `<span>Closes ${fmtDate(m.deadline)}</span>` : ''}
             ${m.resolved_at ? `<span>${m.status === 'void' ? 'Voided' : 'Settled'} ${fmtTime(m.resolved_at)}</span>` : `<span>${fmtTime(m.created_at)}</span>`}
           </div>
@@ -315,7 +314,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
               <tr><th>Target</th><th>Cost</th><th>Shares</th></tr>
               ${byOutcome[outcome].map(r => `<tr>
                 <td class="mono">${r.target}</td>
-                <td class="mono cost">${fmtVal(r.cost)} cr</td>
+                <td class="mono cost">${fmtVal(r.cost)}</td>
                 <td class="mono">${fmtVal(r.shares)}</td>
               </tr>`).join('')}
             </table>`;
@@ -344,7 +343,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
           <p>Controls market depth. Higher <code>b</code> = more capital needed to move prices. A 10-credit trade at 50/50 moves the price by ${(lmsrPriceImpact(m.b, 10) * 100).toFixed(2)}%.</p>
 
           <h4>Max Market Maker Loss</h4>
-          <div class="formula">max loss = b \u00b7 ln(n) = ${fmtVal(m.b)} \u00b7 ln(${m.outcomes.length}) = ${fmtVal(m.liquidity)} credits</div>
+          <div class="formula">max loss = b \u00b7 ln(n) = ${fmtVal(m.b)} \u00b7 ln(${m.outcomes.length}) = ${fmtCredits(m.liquidity)} credits</div>
           <p>The funding required to create this market. This is a fixed bound \u2014 the AMM can never lose more than this, regardless of how the market trades. The bound holds because LMSR is a reversible market maker: any trade can be undone, so the worst case never changes.</p>
 
           <h4>Credits</h4>
@@ -353,7 +352,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
           <h4>This Market</h4>
           <table>
             <tr><td style="color:#8b949e;width:140px">Liquidity (b)</td><td class="mono">${fmtVal(m.b)}</td></tr>
-            <tr><td style="color:#8b949e">Funding / Max Loss</td><td class="mono">${fmtCrLong(m.liquidity)}</td></tr>
+            <tr><td style="color:#8b949e">Funding / Max Loss</td><td class="mono">${fmtCredits(m.liquidity)} credits</td></tr>
             <tr><td style="color:#8b949e">Outcomes</td><td class="mono">${m.outcomes.length} (${m.outcomes.join(', ')})</td></tr>
             <tr><td style="color:#8b949e">AMM Account</td><td class="mono">#${m.amm_account_id}</td></tr>
             ${Object.keys(m.q).map(o => `<tr><td style="color:#8b949e">q[${o}]</td><td class="mono">${fmtVal(m.q[o])}</td></tr>`).join('')}
@@ -371,7 +370,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
             ${conditional ? '<span class="badge badge-conditional">Conditional</span>' : ''}
             <span class="${badgeClass(m.status)}">${m.status}</span>
             ${m.status === 'open' && m.deadline ? `<span>Closes ${fmtDate(m.deadline)}</span>` : ''}
-            <span>Liquidity: ${fmtCr(m.liquidity)} <span style="color:${liq.color}">(${liq.label})</span></span>
+            <span>Liquidity: ${fmtCredits(m.liquidity)} credits <span style="color:${liq.color}">(${liq.label})</span></span>
             <span>Volume: <span class="mono">${fmtVal(m.volume)}</span></span>
             <span>${m.num_trades} trade${m.num_trades !== 1 ? 's' : ''}</span>
             ${prUrl ? `<a href="${esc(prUrl)}" target="_blank" rel="noopener">View PR</a>` : ''}
