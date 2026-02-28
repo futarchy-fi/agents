@@ -262,15 +262,16 @@ async def list_markets(
     - category: exact match on market category
     - category_id: prefix match (e.g. "pr_merge/repo#7" matches
       "pr_merge/repo#7@2026-02-24")
-    - status: exact match on market status ("open", "resolved", "void")
+    - status: exact match or comma-separated list (e.g. "resolved,void")
     """
+    status_set = set(status.split(",")) if status else None
     result = []
     for m in app.state.me.markets.values():
         if category is not None and m.category != category:
             continue
         if category_id is not None and not m.category_id.startswith(category_id):
             continue
-        if status is not None and m.status != status:
+        if status_set is not None and m.status not in status_set:
             continue
         p = lmsr_prices(m.q, m.b) if m.status == "open" else {}
         result.append(MarketSummary(
@@ -287,6 +288,7 @@ async def list_markets(
             resolution=m.resolution,
             created_at=m.created_at,
             deadline=m.deadline,
+            resolved_at=m.resolved_at,
         ))
     return result
 

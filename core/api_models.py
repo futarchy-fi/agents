@@ -70,6 +70,7 @@ class MarketSummary(BaseModel):
     resolution: str | None
     created_at: str
     deadline: str | None = None
+    resolved_at: str | None = None
 
 class MarketDetail(MarketSummary):
     amm_account_id: int
