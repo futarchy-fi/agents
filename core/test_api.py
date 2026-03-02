@@ -45,6 +45,7 @@ async def client():
     app.state.risk = RiskEngine()
     app.state.me = MarketEngine(app.state.risk)
     app.state.auth_store = AuthStore()
+    app.state.tracked_repos = {}
     app.state.lock = asyncio.Lock()
 
     # Reset rate limiter
@@ -837,7 +838,7 @@ class TestPersistence:
 
         # Reload state from disk
         from core.persistence import load_snapshot
-        risk, me, auth_store = load_snapshot("/tmp/futarchy_test_state.json")
+        risk, me, auth_store, tracked_repos = load_snapshot("/tmp/futarchy_test_state.json")
 
         # Verify market exists
         assert mid in me.markets
@@ -933,3 +934,289 @@ class TestDashboard:
             f"Dashboard fetches API paths that don't exist as routes: {missing}. "
             f"Registered /v1 routes: {sorted('/v1/' + r for r in registered)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tracked Repos Admin
+# ---------------------------------------------------------------------------
+
+class TestTrackedRepos:
+    async def test_add_list_delete_repo(self, client):
+        # List — empty initially
+        resp = await client.get("/v1/admin/repos", headers=ADMIN_HEADERS)
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+        # Add a repo
+        resp = await client.post("/v1/admin/repos", headers=ADMIN_HEADERS,
+                                  json={"repo": "snapshot-labs/sx-monorepo",
+                                        "webhook_secret": "test-secret"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["repo"] == "snapshot-labs/sx-monorepo"
+        assert data["enabled"] is True
+        assert data["has_webhook_secret"] is True
+
+        # List shows it
+        resp = await client.get("/v1/admin/repos", headers=ADMIN_HEADERS)
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+        # Delete
+        resp = await client.delete(
+            "/v1/admin/repos/snapshot-labs/sx-monorepo",
+            headers=ADMIN_HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == "snapshot-labs/sx-monorepo"
+
+        # List — empty again
+        resp = await client.get("/v1/admin/repos", headers=ADMIN_HEADERS)
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_add_repo_invalid_format(self, client):
+        resp = await client.post("/v1/admin/repos", headers=ADMIN_HEADERS,
+                                  json={"repo": "no-slash"})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_repo"
+
+    async def test_delete_nonexistent_repo(self, client):
+        resp = await client.delete(
+            "/v1/admin/repos/not/tracked",
+            headers=ADMIN_HEADERS)
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "repo_not_found"
+
+    async def test_add_repo_requires_admin(self, client):
+        resp = await client.post("/v1/admin/repos",
+                                  json={"repo": "owner/name"})
+        assert resp.status_code == 401
+
+    async def test_add_repo_upsert(self, client):
+        """Adding the same repo twice updates it."""
+        await client.post("/v1/admin/repos", headers=ADMIN_HEADERS,
+                          json={"repo": "owner/name",
+                                "webhook_secret": "s1"})
+        resp = await client.post("/v1/admin/repos", headers=ADMIN_HEADERS,
+                                  json={"repo": "owner/name",
+                                        "webhook_secret": "s2"})
+        assert resp.status_code == 200
+
+        repos = (await client.get("/v1/admin/repos",
+                                   headers=ADMIN_HEADERS)).json()
+        assert len(repos) == 1
+
+
+# ---------------------------------------------------------------------------
+# GitHub Webhook
+# ---------------------------------------------------------------------------
+
+def _make_webhook_payload(action, pr_number=42, pr_title="Test PR",
+                          repo="snapshot-labs/sx-monorepo",
+                          merged=False):
+    """Build a GitHub pull_request webhook payload."""
+    return {
+        "action": action,
+        "pull_request": {
+            "number": pr_number,
+            "title": pr_title,
+            "html_url": f"https://github.com/{repo}/pull/{pr_number}",
+            "merged": merged,
+        },
+        "repository": {
+            "full_name": repo,
+        },
+    }
+
+
+def _sign_payload(payload_bytes: bytes, secret: str) -> str:
+    """Compute HMAC-SHA256 signature like GitHub does."""
+    import hashlib, hmac as _hmac, json
+    sig = _hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+    return f"sha256={sig}"
+
+
+class TestWebhook:
+    REPO = "snapshot-labs/sx-monorepo"
+    SECRET = "webhook-test-secret"
+
+    async def _setup_repo(self, client, secret=None):
+        """Add tracked repo and optionally a treasury."""
+        # Ensure tracked_repos is initialized
+        if not hasattr(app.state, "tracked_repos"):
+            app.state.tracked_repos = {}
+
+        await client.post("/v1/admin/repos", headers=ADMIN_HEADERS,
+                          json={"repo": self.REPO,
+                                "webhook_secret": secret or self.SECRET})
+
+        # Create a treasury with funds
+        resp = await client.post("/v1/admin/accounts", headers=ADMIN_HEADERS)
+        treasury_id = resp.json()["account_id"]
+        await client.post("/v1/admin/mint", headers=ADMIN_HEADERS,
+                          json={"account_id": treasury_id, "amount": "10000"})
+
+        # Set the treasury env var
+        import core.api
+        core.api.TREASURY_ACCOUNT_ID = str(treasury_id)
+        return treasury_id
+
+    async def _post_webhook(self, client, payload, secret=None):
+        """Post a webhook event with proper signature."""
+        import json as _json
+        body = _json.dumps(payload).encode()
+        headers = {"x-github-event": "pull_request"}
+        if secret:
+            headers["x-hub-signature-256"] = _sign_payload(body, secret)
+        return await client.post("/v1/hooks/github", content=body,
+                                  headers={**headers,
+                                           "content-type": "application/json"})
+
+    async def test_pr_opened_creates_market(self, client):
+        await self._setup_repo(client)
+        payload = _make_webhook_payload("opened", pr_number=10,
+                                         pr_title="Add feature")
+        resp = await self._post_webhook(client, payload, self.SECRET)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["action"] == "opened"
+        assert data["market_id"] is not None
+        assert data["skipped"] is False
+
+        # Verify market was actually created
+        markets = (await client.get("/v1/markets",
+                                     params={"category": "pr_merge"})).json()
+        assert len(markets) == 1
+        assert "#10@" in markets[0]["category_id"]
+        assert markets[0]["question"].startswith("Will PR #10")
+
+    async def test_pr_opened_idempotent(self, client):
+        """Duplicate open events don't create duplicate markets."""
+        await self._setup_repo(client)
+        payload = _make_webhook_payload("opened", pr_number=10)
+
+        resp1 = await self._post_webhook(client, payload, self.SECRET)
+        assert resp1.status_code == 200
+        mid1 = resp1.json()["market_id"]
+
+        resp2 = await self._post_webhook(client, payload, self.SECRET)
+        assert resp2.status_code == 200
+        assert resp2.json()["skipped"] is True
+        assert resp2.json()["market_id"] == mid1
+
+        # Only one market exists
+        markets = (await client.get("/v1/markets",
+                                     params={"category": "pr_merge"})).json()
+        assert len(markets) == 1
+
+    async def test_pr_closed_merged_resolves_yes(self, client):
+        await self._setup_repo(client)
+
+        # First create market
+        open_payload = _make_webhook_payload("opened", pr_number=20)
+        resp = await self._post_webhook(client, open_payload, self.SECRET)
+        mid = resp.json()["market_id"]
+
+        # Then close/merge
+        close_payload = _make_webhook_payload("closed", pr_number=20,
+                                               merged=True)
+        resp = await self._post_webhook(client, close_payload, self.SECRET)
+        assert resp.status_code == 200
+        assert resp.json()["resolution"] == "yes"
+
+        # Verify market is resolved
+        detail = (await client.get(f"/v1/markets/{mid}")).json()
+        assert detail["status"] == "resolved"
+        assert detail["resolution"] == "yes"
+
+    async def test_pr_closed_not_merged_resolves_no(self, client):
+        await self._setup_repo(client)
+
+        open_payload = _make_webhook_payload("opened", pr_number=30)
+        resp = await self._post_webhook(client, open_payload, self.SECRET)
+        mid = resp.json()["market_id"]
+
+        close_payload = _make_webhook_payload("closed", pr_number=30,
+                                               merged=False)
+        resp = await self._post_webhook(client, close_payload, self.SECRET)
+        assert resp.status_code == 200
+        assert resp.json()["resolution"] == "no"
+
+        detail = (await client.get(f"/v1/markets/{mid}")).json()
+        assert detail["status"] == "resolved"
+        assert detail["resolution"] == "no"
+
+    async def test_untracked_repo_rejected(self, client):
+        # Don't add any repo — post directly
+        if not hasattr(app.state, "tracked_repos"):
+            app.state.tracked_repos = {}
+        payload = _make_webhook_payload("opened", repo="unknown/repo")
+        resp = await self._post_webhook(client, payload)
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "repo_not_tracked"
+
+    async def test_disabled_repo_skipped(self, client):
+        if not hasattr(app.state, "tracked_repos"):
+            app.state.tracked_repos = {}
+        await client.post("/v1/admin/repos", headers=ADMIN_HEADERS,
+                          json={"repo": self.REPO,
+                                "webhook_secret": self.SECRET,
+                                "enabled": False})
+        payload = _make_webhook_payload("opened")
+        resp = await self._post_webhook(client, payload, self.SECRET)
+        assert resp.status_code == 200
+        assert resp.json()["skipped"] is True
+
+    async def test_invalid_signature_rejected(self, client):
+        await self._setup_repo(client)
+        payload = _make_webhook_payload("opened")
+        # Sign with wrong secret
+        resp = await self._post_webhook(client, payload, "wrong-secret")
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "signature_invalid"
+
+    async def test_missing_signature_rejected(self, client):
+        await self._setup_repo(client)
+        payload = _make_webhook_payload("opened")
+        # No signature header
+        import json as _json
+        body = _json.dumps(payload).encode()
+        resp = await client.post("/v1/hooks/github", content=body,
+                                  headers={"x-github-event": "pull_request",
+                                           "content-type": "application/json"})
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "signature_missing"
+
+    async def test_non_pr_event_ignored(self, client):
+        if not hasattr(app.state, "tracked_repos"):
+            app.state.tracked_repos = {}
+        resp = await client.post("/v1/hooks/github",
+                                  json={"action": "created"},
+                                  headers={"x-github-event": "push"})
+        assert resp.status_code == 200
+        assert resp.json()["skipped"] is True
+
+    async def test_unhandled_action_ignored(self, client):
+        await self._setup_repo(client)
+        payload = _make_webhook_payload("reopened")
+        resp = await self._post_webhook(client, payload, self.SECRET)
+        assert resp.status_code == 200
+        assert resp.json()["skipped"] is True
+
+    async def test_market_metadata_correct(self, client):
+        """Verify the market metadata matches pr-market.yml conventions."""
+        await self._setup_repo(client)
+        payload = _make_webhook_payload("opened", pr_number=55,
+                                         pr_title="Big feature")
+        resp = await self._post_webhook(client, payload, self.SECRET)
+        mid = resp.json()["market_id"]
+
+        detail = (await client.get(f"/v1/markets/{mid}")).json()
+        meta = detail["metadata"]
+        assert meta["pr_number"] == 55
+        assert meta["repo"] == self.REPO
+        assert "pr_url" in meta
+        assert "liquidity_step" in meta
+        assert "liquidity_steps_remaining" in meta
+        assert "next_liquidity_at" in meta
+        assert detail["deadline"] is not None

@@ -3,12 +3,17 @@ FastAPI application. Agents-first HTTP API for the futarchy prediction market.
 
 Public endpoints (no auth): health, markets, market detail, positions, trades.
 User endpoints (API key): /me, buy, sell.
-Admin endpoints (admin key): mint, create market, resolve, void.
+Admin endpoints (admin key): mint, create market, resolve, void, tracked repos.
+Webhook: POST /v1/hooks/github — receive GitHub PR events for tracked repos.
 """
 
 import asyncio
+import hashlib
+import hmac
+import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -30,6 +35,7 @@ from core.api_models import (
     ResolveRequest, HealthResponse,
     AddLiquidityRequest, AddLiquidityResponse,
     UpdateMetadataRequest,
+    AddRepoRequest, TrackedRepoResponse, WebhookResponse,
 )
 from core.auth import (
     AuthStore, validate_github_token,
@@ -38,30 +44,42 @@ from core.auth import (
 from core.lmsr import max_loss, prices as lmsr_prices, cost_to_move_price
 from core.market_engine import MarketEngine
 from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
-from core.models import ZERO, reset_counters
+from core.models import ZERO, TrackedRepo, reset_counters
 from core.persistence import save_snapshot, load_snapshot
 from core.risk_engine import RiskEngine, InsufficientBalance
+
+logger = logging.getLogger(__name__)
 
 
 STATE_PATH = os.environ.get("FUTARCHY_STATE", "./futarchy_state.json")
 INITIAL_CREDITS = Decimal(os.environ.get("INITIAL_CREDITS", "100"))
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+TREASURY_ACCOUNT_ID = os.environ.get("FUTARCHY_TREASURY_ID", "")
+
+# Liquidity settings (matching pr-market.yml defaults)
+LIQUIDITY_INITIAL = os.environ.get("LIQUIDITY_INITIAL", "40")
+LIQUIDITY_STEP = os.environ.get("LIQUIDITY_STEP", "40")
+LIQUIDITY_RAMP_STEPS = int(os.environ.get("LIQUIDITY_RAMP_STEPS", "4"))
+LIQUIDITY_RAMP_INTERVAL_MINUTES = int(os.environ.get("LIQUIDITY_RAMP_INTERVAL_MINUTES", "30"))
+LIQUIDITY_BUDGET = os.environ.get("LIQUIDITY_BUDGET", "200")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load state
     if os.path.exists(STATE_PATH):
-        risk, me, auth_store = load_snapshot(STATE_PATH)
+        risk, me, auth_store, tracked_repos = load_snapshot(STATE_PATH)
     else:
         reset_counters()
         risk = RiskEngine()
         me = MarketEngine(risk)
         auth_store = AuthStore()
+        tracked_repos = {}
 
     app.state.risk = risk
     app.state.me = me
     app.state.auth_store = auth_store or AuthStore()
+    app.state.tracked_repos = tracked_repos
     app.state.lock = asyncio.Lock()
     yield
 
@@ -73,7 +91,8 @@ app.add_exception_handler(APIError, api_error_handler)
 def _save():
     """Save state to disk. Called after every mutation."""
     save_snapshot(app.state.risk, app.state.me, STATE_PATH,
-                  auth_store=app.state.auth_store)
+                  auth_store=app.state.auth_store,
+                  tracked_repos=app.state.tracked_repos)
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -647,3 +666,222 @@ async def admin_update_metadata(market_id: int, req: UpdateMetadataRequest,
         _save()
 
     return {"market_id": market_id, "metadata": m.metadata}
+
+
+# ---------------------------------------------------------------------------
+# Admin: Tracked Repos
+# ---------------------------------------------------------------------------
+
+@app.get("/v1/admin/repos")
+async def admin_list_repos(_: AdminDep) -> list[TrackedRepoResponse]:
+    """List tracked repos."""
+    return [
+        TrackedRepoResponse(
+            repo=r.repo,
+            enabled=r.enabled,
+            has_webhook_secret=r.webhook_secret is not None,
+            added_at=r.added_at,
+        )
+        for r in app.state.tracked_repos.values()
+    ]
+
+
+@app.post("/v1/admin/repos")
+async def admin_add_repo(req: AddRepoRequest, _: AdminDep) -> TrackedRepoResponse:
+    """Add a tracked repo for webhook-based PR markets."""
+    slug = req.repo.strip().lower()
+    if "/" not in slug or len(slug.split("/")) != 2:
+        raise APIError(400, "invalid_repo",
+                       "Repo must be in 'owner/name' format")
+
+    async with app.state.lock:
+        repo = TrackedRepo.new(
+            repo=slug,
+            webhook_secret=req.webhook_secret,
+            enabled=req.enabled,
+        )
+        app.state.tracked_repos[slug] = repo
+        _save()
+
+    return TrackedRepoResponse(
+        repo=repo.repo,
+        enabled=repo.enabled,
+        has_webhook_secret=repo.webhook_secret is not None,
+        added_at=repo.added_at,
+    )
+
+
+@app.delete("/v1/admin/repos/{repo_slug:path}")
+async def admin_delete_repo(repo_slug: str, _: AdminDep) -> dict:
+    """Remove a tracked repo. Use URL-encoded slug (e.g. snapshot-labs%2Fsx-monorepo)."""
+    slug = repo_slug.strip().lower()
+    async with app.state.lock:
+        if slug not in app.state.tracked_repos:
+            raise APIError(404, "repo_not_found",
+                           f"Repo '{slug}' is not tracked")
+        del app.state.tracked_repos[slug]
+        _save()
+
+    return {"deleted": slug}
+
+
+# ---------------------------------------------------------------------------
+# GitHub Webhook
+# ---------------------------------------------------------------------------
+
+def _verify_webhook_signature(payload: bytes, signature: str,
+                              secret: str) -> bool:
+    """Verify GitHub HMAC-SHA256 webhook signature."""
+    expected = "sha256=" + hmac.new(
+        secret.encode(), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+@app.post("/v1/hooks/github")
+async def github_webhook(request: Request) -> WebhookResponse:
+    """Receive GitHub pull_request webhook events for tracked repos."""
+    body = await request.body()
+
+    # Parse payload
+    try:
+        payload = await request.json()
+    except Exception:
+        raise APIError(400, "invalid_payload", "Invalid JSON payload")
+
+    # Must be a pull_request event
+    event_type = request.headers.get("x-github-event", "")
+    if event_type != "pull_request":
+        return WebhookResponse(
+            action="ignored", skipped=True,
+            reason=f"Event type '{event_type}' is not pull_request")
+
+    action = payload.get("action", "")
+    pr = payload.get("pull_request", {})
+    repo_full = payload.get("repository", {}).get("full_name", "")
+    repo_slug = repo_full.strip().lower()
+
+    # Look up tracked repo
+    tracked = app.state.tracked_repos.get(repo_slug)
+    if tracked is None:
+        raise APIError(404, "repo_not_tracked",
+                       f"Repo '{repo_full}' is not tracked")
+    if not tracked.enabled:
+        return WebhookResponse(
+            action=action, skipped=True,
+            reason=f"Repo '{repo_full}' is disabled")
+
+    # Validate HMAC signature
+    if tracked.webhook_secret:
+        signature = request.headers.get("x-hub-signature-256", "")
+        if not signature:
+            raise APIError(401, "signature_missing",
+                           "X-Hub-Signature-256 header required")
+        if not _verify_webhook_signature(body, signature,
+                                         tracked.webhook_secret):
+            raise APIError(401, "signature_invalid",
+                           "Webhook signature verification failed")
+
+    # Route by action
+    if action == "opened":
+        return await _handle_pr_opened(tracked, pr, repo_slug)
+    elif action == "closed":
+        return await _handle_pr_closed(pr, repo_slug)
+    else:
+        return WebhookResponse(
+            action=action, skipped=True,
+            reason=f"Action '{action}' is not handled")
+
+
+async def _handle_pr_opened(tracked: TrackedRepo, pr: dict,
+                            repo_slug: str) -> WebhookResponse:
+    """Create a market for a newly opened PR."""
+    import math as _math
+
+    pr_num = pr.get("number")
+    pr_title = pr.get("title", "")
+    pr_url = pr.get("html_url", "")
+
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    deadline = tomorrow.isoformat().replace("+00:00", "Z")
+    next_liquidity = (now + timedelta(minutes=LIQUIDITY_RAMP_INTERVAL_MINUTES)
+                      ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    category_id = f"{repo_slug}#{pr_num}@{today}"
+
+    # Idempotency: check if market already exists
+    for m in app.state.me.markets.values():
+        if m.category == "pr_merge" and m.category_id == category_id:
+            return WebhookResponse(
+                action="opened", market_id=m.id, skipped=True,
+                reason=f"Market already exists for {category_id}")
+
+    question = f"Will PR #{pr_num} '{pr_title}' merge by {deadline}?"
+    funding = Decimal(LIQUIDITY_INITIAL)
+    b = funding / Decimal(str(_math.log(2)))
+
+    # Determine funding source
+    funding_account_id = int(TREASURY_ACCOUNT_ID) if TREASURY_ACCOUNT_ID else None
+
+    metadata = {
+        "pr_number": pr_num,
+        "pr_url": pr_url,
+        "repo": repo_slug,
+        "liquidity_budget": LIQUIDITY_BUDGET,
+        "liquidity_step": LIQUIDITY_STEP,
+        "liquidity_steps_remaining": LIQUIDITY_RAMP_STEPS,
+        "next_liquidity_at": next_liquidity,
+    }
+
+    async with app.state.lock:
+        try:
+            market, amm = app.state.me.create_market(
+                question=question,
+                category="pr_merge",
+                category_id=category_id,
+                metadata=metadata,
+                b=b,
+                deadline=deadline,
+                funding_account_id=funding_account_id,
+            )
+        except (ValueError, InsufficientBalance) as e:
+            raise translate_engine_error(e)
+        _save()
+
+    logger.info("Webhook created market %d for %s", market.id, category_id)
+    return WebhookResponse(action="opened", market_id=market.id)
+
+
+async def _handle_pr_closed(pr: dict, repo_slug: str) -> WebhookResponse:
+    """Resolve all open markets for a closed PR."""
+    pr_num = pr.get("number")
+    merged = pr.get("merged", False)
+    outcome = "yes" if merged else "no"
+    category_prefix = f"{repo_slug}#{pr_num}"
+
+    resolved_ids = []
+    async with app.state.lock:
+        for m in list(app.state.me.markets.values()):
+            if (m.category == "pr_merge"
+                    and m.category_id.startswith(category_prefix)
+                    and m.status == "open"):
+                try:
+                    app.state.me.resolve(m.id, outcome)
+                    resolved_ids.append(m.id)
+                except ValueError:
+                    pass  # already resolved/void
+        if resolved_ids:
+            _save()
+
+    if not resolved_ids:
+        return WebhookResponse(
+            action="closed", skipped=True, resolution=outcome,
+            reason=f"No open markets found for {category_prefix}")
+
+    logger.info("Webhook resolved %d markets for %s as %s",
+                len(resolved_ids), category_prefix, outcome)
+    return WebhookResponse(
+        action="closed", market_id=resolved_ids[0], resolution=outcome)

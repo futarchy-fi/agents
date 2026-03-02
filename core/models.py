@@ -337,3 +337,25 @@ class Market:
     def position(self, account_id: int) -> dict[str, Decimal]:
         return self.positions.get(account_id,
                                   {o: ZERO for o in self.outcomes})
+
+
+# ---------------------------------------------------------------------------
+# Tracked repos (for external webhook-based market creation)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TrackedRepo:
+    """A GitHub repo tracked for PR prediction markets via webhook."""
+    repo: str                           # "snapshot-labs/sx-monorepo"
+    webhook_secret: Optional[str]       # HMAC secret for signature validation
+    enabled: bool = True                # kill switch
+    added_at: str = field(default_factory=_now)
+
+    @staticmethod
+    def new(repo: str, webhook_secret: Optional[str] = None,
+            enabled: bool = True) -> "TrackedRepo":
+        return TrackedRepo(
+            repo=repo,
+            webhook_secret=webhook_secret,
+            enabled=enabled,
+        )

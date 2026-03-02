@@ -19,7 +19,7 @@ import os
 from decimal import Decimal
 
 from core.models import (
-    Lock, Account, Transaction, TradeLeg, Trade, Market,
+    Lock, Account, Transaction, TradeLeg, Trade, Market, TrackedRepo,
     ZERO, _counters, set_counter, reset_counters,
 )
 from core.risk_engine import RiskEngine
@@ -153,7 +153,7 @@ def _load_market(d: dict) -> Market:
 # Schema versioning
 # ---------------------------------------------------------------------------
 
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 
 
 def _migrate_1_to_2(state: dict) -> dict:
@@ -163,7 +163,14 @@ def _migrate_1_to_2(state: dict) -> dict:
     return state
 
 
-_MIGRATIONS: dict[int, callable] = {1: _migrate_1_to_2}
+def _migrate_2_to_3(state: dict) -> dict:
+    """Add tracked_repos section to snapshot."""
+    state["tracked_repos"] = {}
+    state["version"] = 3
+    return state
+
+
+_MIGRATIONS: dict[int, callable] = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
 
 
 def _apply_migrations(state: dict) -> dict:
@@ -184,9 +191,10 @@ def _apply_migrations(state: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
-                  path: str, auth_store=None) -> None:
+                  path: str, auth_store=None,
+                  tracked_repos: dict | None = None) -> None:
     """
-    Save complete RE + ME + auth state to a JSON file.
+    Save complete RE + ME + auth + tracked_repos state to a JSON file.
     Atomic: writes to .tmp then renames.
     """
     state = {
@@ -196,6 +204,10 @@ def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
         "transactions": [_serialize(tx) for tx in risk.transactions],
         "markets": [_serialize(m) for m in market_engine.markets.values()],
         "auth": _serialize_auth(auth_store) if auth_store else {"users": []},
+        "tracked_repos": {
+            slug: _serialize(repo)
+            for slug, repo in (tracked_repos or {}).items()
+        },
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -258,11 +270,24 @@ def _load_auth(auth_data: dict):
     return store
 
 
+def _load_tracked_repos(data: dict) -> dict[str, TrackedRepo]:
+    """Load tracked repos from snapshot data."""
+    repos = {}
+    for slug, rdata in data.items():
+        repos[slug] = TrackedRepo(
+            repo=rdata["repo"],
+            webhook_secret=rdata.get("webhook_secret"),
+            enabled=rdata.get("enabled", True),
+            added_at=rdata.get("added_at", ""),
+        )
+    return repos
+
+
 def load_snapshot(path: str) -> tuple:
     """
-    Load RE + ME + auth state from a JSON snapshot.
+    Load RE + ME + auth + tracked_repos state from a JSON snapshot.
     Applies migrations automatically if the snapshot is an older version.
-    Returns (risk_engine, market_engine, auth_store) ready to use.
+    Returns (risk_engine, market_engine, auth_store, tracked_repos) ready to use.
     auth_store is None if the auth module is not available.
     """
     with open(path) as f:
@@ -292,4 +317,7 @@ def load_snapshot(path: str) -> tuple:
     # Restore auth
     auth_store = _load_auth(state.get("auth", {"users": []}))
 
-    return risk, me, auth_store
+    # Restore tracked repos
+    tracked_repos = _load_tracked_repos(state.get("tracked_repos", {}))
+
+    return risk, me, auth_store, tracked_repos
