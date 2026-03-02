@@ -1,0 +1,13 @@
+{
+  "repositories": [
+    {
+      "name": "futarchy-fi/agents",
+      "enabled": false,
+      "secret_env": "WEBHOOK_SECRET_FUTARCHY_AGENTS",
+      "category": "pr_merge",
+      "funding": "40",
+      "deadline_hours": 24,
+      "question_template": "Will PR #{pr_number} '{pr_title}' merge by {deadline}?"
+    }
+  ]
+}
