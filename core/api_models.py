@@ -172,3 +172,24 @@ class HealthResponse(BaseModel):
     status: str
     markets: int
     accounts: int
+
+
+# --- Tracked Repos ---
+
+class AddRepoRequest(BaseModel):
+    repo: str                          # "snapshot-labs/sx-monorepo"
+    webhook_secret: str | None = None  # HMAC secret for signature validation
+    enabled: bool = True
+
+class TrackedRepoResponse(BaseModel):
+    repo: str
+    enabled: bool
+    has_webhook_secret: bool
+    added_at: str
+
+class WebhookResponse(BaseModel):
+    action: str
+    market_id: int | None = None
+    resolution: str | None = None
+    skipped: bool = False
+    reason: str | None = None

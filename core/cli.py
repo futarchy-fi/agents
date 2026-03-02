@@ -51,7 +51,7 @@ def file_lock(path):
 
 def load_or_create(path):
     if os.path.exists(path):
-        risk, me, _auth = load_snapshot(path)
+        risk, me, _auth, _repos = load_snapshot(path)
         return risk, me
     reset_counters()
     risk = RiskEngine()
