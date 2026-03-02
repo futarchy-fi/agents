@@ -7,8 +7,13 @@ Admin endpoints (admin key): mint, create market, resolve, void.
 """
 
 import asyncio
+import hashlib
+import hmac
 import os
+import json
+import math
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -36,7 +41,6 @@ from core.auth import (
     start_device_flow, poll_device_flow,
 )
 from core.reputation import calculate_credits
-from core.lmsr import max_loss, prices as lmsr_prices
 from core.lmsr import max_loss, prices as lmsr_prices, cost_to_move_price
 from core.market_engine import MarketEngine
 from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
@@ -47,6 +51,10 @@ from core.risk_engine import RiskEngine, InsufficientBalance
 
 STATE_PATH = os.environ.get("FUTARCHY_STATE", "./futarchy_state.json")
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+WEBHOOK_CONFIG_PATH = os.environ.get(
+    "FUTARCHY_WEBHOOK_CONFIG_PATH",
+    os.path.join(os.path.dirname(__file__), "webhook_repos.json"),
+)
 
 
 @asynccontextmanager
@@ -64,6 +72,7 @@ async def lifespan(app: FastAPI):
     app.state.me = me
     app.state.auth_store = auth_store or AuthStore()
     app.state.lock = asyncio.Lock()
+    app.state.webhook_seen_delivery_ids = set()
     yield
 
 
@@ -78,6 +87,189 @@ def _save():
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+def _coerce_int(value, field_name: str) -> int | None:
+    """Parse integer config fields, return None if empty."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise APIError(400, "invalid_webhook_config",
+                           f"{field_name} must be an integer: {value}") from exc
+    raise APIError(400, "invalid_webhook_config",
+                   f"{field_name} must be an integer: {value}")
+
+
+def _coerce_decimal(value, field_name: str) -> Decimal:
+    """Parse decimal config fields."""
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, TypeError) as exc:
+        raise APIError(400, "invalid_webhook_request",
+                       f"{field_name} must be a decimal: {value}") from exc
+    if decimal_value <= 0:
+        raise APIError(400, "invalid_webhook_request",
+                       f"{field_name} must be positive: {value}")
+    return decimal_value
+
+
+def _load_webhook_repo_configs() -> list[dict]:
+    """Load repository-level webhook config.
+
+    Config precedence:
+    1) FUTARCHY_WEBHOOK_CONFIG (JSON string)
+    2) FUTARCHY_WEBHOOK_CONFIG_PATH (JSON file)
+    3) fallback empty list
+    """
+    raw = os.environ.get("FUTARCHY_WEBHOOK_CONFIG")
+    if raw:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise APIError(500, "invalid_webhook_config",
+                           "Invalid FUTARCHY_WEBHOOK_CONFIG JSON") from exc
+    else:
+        if not os.path.exists(WEBHOOK_CONFIG_PATH):
+            return []
+        try:
+            with open(WEBHOOK_CONFIG_PATH) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise APIError(500, "invalid_webhook_config",
+                           "Invalid FUTARCHY_WEBHOOK_CONFIG file") from exc
+
+    if isinstance(data, dict):
+        repos = data.get("repositories", [])
+    else:
+        repos = data
+
+    if not isinstance(repos, list):
+        raise APIError(500, "invalid_webhook_config",
+                       "Webhook config must include a `repositories` array")
+    return [r for r in repos if isinstance(r, dict)]
+
+
+def _get_webhook_repo_config(repo_name: str) -> dict | None:
+    for cfg in _load_webhook_repo_configs():
+        if cfg.get("name") == repo_name:
+            return cfg
+    return None
+
+
+def _resolve_webhook_secret(cfg: dict) -> str | None:
+    """Resolve a repo's webhook secret from config or environment."""
+    static_secret = cfg.get("secret")
+    if isinstance(static_secret, str) and static_secret:
+        return static_secret
+
+    env_name = cfg.get("secret_env")
+    if not isinstance(env_name, str) or not env_name:
+        return None
+    return os.environ.get(env_name)
+
+
+def _verify_github_signature(secret: str, signature: str, body: bytes) -> None:
+    if not signature:
+        raise APIError(401, "missing_signature",
+                       "X-Hub-Signature-256 is required")
+    if not signature.startswith("sha256="):
+        raise APIError(400, "invalid_signature",
+                       "Unsupported signature format")
+    expected = hmac.new(
+        secret.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, f"sha256={expected}"):
+        raise APIError(401, "invalid_signature",
+                       "Webhook signature verification failed")
+
+
+def _event_id_seen_or_record(delivery_id: str | None) -> bool:
+    """Return True if this delivery ID was already processed."""
+    if not delivery_id:
+        return False
+    seen = getattr(app.state, "webhook_seen_delivery_ids", set())
+    if delivery_id in seen:
+        return True
+    seen.add(delivery_id)
+    app.state.webhook_seen_delivery_ids = seen
+    return False
+
+
+def _format_deadline(hours: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=hours)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def _pr_category_id(repo_name: str, pr_num: int, event_date: str | None = None) -> str:
+    if not event_date:
+        event_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"{repo_name}#{pr_num}@{event_date}"
+
+
+def _market_category(cfg: dict) -> str:
+    category = cfg.get("category")
+    return category if isinstance(category, str) and category else "pr_merge"
+
+
+def _market_outcomes(cfg: dict) -> list[str]:
+    outcomes = cfg.get("outcomes")
+    if isinstance(outcomes, list) and outcomes:
+        return [str(o) for o in outcomes if str(o)]
+    return ["yes", "no"]
+
+
+def _market_funding_and_account(cfg: dict) -> tuple[Decimal, int | None, int]:
+    funding_raw = cfg.get("funding")
+    b_raw = cfg.get("b")
+    if funding_raw is not None and b_raw is not None:
+        raise APIError(400, "invalid_webhook_config",
+                       "Provide either `funding` or `b`, not both")
+
+    outcomes = _market_outcomes(cfg)
+    n_outcomes = len(outcomes)
+
+    if funding_raw is not None:
+        funding = _coerce_decimal(funding_raw, "funding")
+        b = funding / Decimal(str(math.log(n_outcomes)))
+    else:
+        b_value = b_raw if b_raw is not None else "100"
+        b = _coerce_decimal(b_value, "b")
+
+    account_id = _coerce_int(cfg.get("funding_account_id"), "funding_account_id")
+    env_name = cfg.get("funding_account_id_env")
+    if account_id is None and isinstance(env_name, str):
+        account_id = _coerce_int(os.environ.get(env_name), env_name)
+
+    return b, account_id, n_outcomes
+
+
+def _is_supported_pr_action(action: str | None) -> bool:
+    return action in {"opened", "reopened", "closed"}
+
+
+def _resolve_market_metadata(pr_num: int, pr_url: str, cfg: dict) -> dict:
+    metadata = dict(cfg.get("metadata", {}))
+    metadata.update({
+        "pr_number": pr_num,
+        "pr_url": pr_url,
+    })
+    return metadata
+
+
+def _render_template(template: str, **kwargs) -> str:
+    try:
+        return template.format(**kwargs)
+    except KeyError as exc:
+        raise APIError(400, "invalid_webhook_config",
+                       f"Template placeholder missing: {exc.args[0]}")
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +612,157 @@ async def get_market_trades(market_id: int) -> list[TradeResponse]:
 
 
 # ---------------------------------------------------------------------------
+# Webhooks
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/webhooks/github")
+async def github_webhook(request: Request) -> dict:
+    """Process GitHub pull request webhooks and auto-create/resolve markets."""
+    body = await request.body()
+    if not body:
+        raise APIError(400, "empty_payload", "Missing request body")
+
+    event = request.headers.get("x-github-event")
+    delivery_id = request.headers.get("x-github-delivery")
+    signature = request.headers.get("x-hub-signature-256")
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise APIError(400, "invalid_json",
+                       "Webhook payload must be valid JSON") from exc
+
+    if event == "ping":
+        return {"status": "ignored", "reason": "ping"}
+
+    if event != "pull_request":
+        return {"status": "ignored", "reason": "unsupported_event"}
+
+    if _event_id_seen_or_record(delivery_id):
+        return {"status": "ignored", "reason": "duplicate_delivery"}
+
+    action = payload.get("action")
+    if action is None:
+        raise APIError(400, "invalid_payload", "Missing pull_request action")
+    if not _is_supported_pr_action(action):
+        return {"status": "ignored", "reason": "unsupported_action"}
+
+    pull = payload.get("pull_request") or {}
+    repo = (payload.get("repository") or {})
+
+    repo_name = repo.get("full_name")
+    if not isinstance(repo_name, str):
+        raise APIError(400, "invalid_payload", "Missing repository.full_name")
+
+    cfg = _get_webhook_repo_config(repo_name)
+    if cfg is None:
+        raise APIError(403, "repo_not_tracked",
+                       f"Repository not approved for webhook events: {repo_name}")
+    if not cfg.get("enabled", True):
+        raise APIError(403, "repo_not_approved",
+                       f"Webhook not enabled for repository: {repo_name}")
+
+    secret = _resolve_webhook_secret(cfg)
+    if not secret:
+        raise APIError(400, "invalid_webhook_secret",
+                       f"No webhook secret configured for {repo_name}")
+
+    _verify_github_signature(secret, signature, body)
+
+    if not isinstance(pull.get("number"), int):
+        raise APIError(400, "invalid_payload", "Missing pull_request.number")
+    pr_num = pull["number"]
+    pr_title = pull.get("title") or f"PR #{pr_num}"
+    pr_url = pull.get("html_url") or ""
+
+    category = _market_category(cfg)
+    outcomes = _market_outcomes(cfg)
+    b, funding_account_id, _ = _market_funding_and_account(cfg)
+
+    category_prefix = _pr_category_id(repo_name, pr_num)
+
+    if action in {"opened", "reopened"}:
+        deadline_hours = _coerce_int(cfg.get("deadline_hours"), "deadline_hours") or 24
+        if deadline_hours <= 0:
+            raise APIError(400, "invalid_webhook_config",
+                           "deadline_hours must be positive")
+
+        question_template = (
+            cfg.get("question_template")
+            or "Will PR #{pr_number} '{pr_title}' merge by {deadline}?"
+        )
+        deadline = _format_deadline(deadline_hours)
+        question = _render_template(
+            question_template,
+            repo=repo_name,
+            pr_number=pr_num,
+            pr_title=pr_title,
+            deadline=deadline,
+        )
+
+        # Avoid creating duplicate open markets for the same PR/day
+        for existing in app.state.me.markets.values():
+            if (existing.category == category and existing.status == "open"
+                    and existing.category_id == category_prefix):
+                return {
+                    "status": "ignored",
+                    "reason": "market_already_exists",
+                    "category_id": category_prefix,
+                }
+
+        metadata = _resolve_market_metadata(pr_num, pr_url, cfg)
+        async with app.state.lock:
+            market, _ = app.state.me.create_market(
+                question=question,
+                category=category,
+                category_id=category_prefix,
+                metadata=metadata,
+                b=b,
+                outcomes=outcomes,
+                deadline=deadline,
+                funding_account_id=funding_account_id,
+            )
+            _save()
+
+        return {
+            "status": "created",
+            "market_id": market.id,
+            "category_id": category_prefix,
+            "outcome": "yes",
+            "action": action,
+        }
+
+    if action == "closed":
+        prefix = f"{repo_name}#{pr_num}"
+        merged = bool(pull.get("merged"))
+        outcome = "yes" if merged else "no"
+
+        open_market_ids = [
+            m.id for m in app.state.me.markets.values()
+            if m.category == category
+            and m.status == "open"
+            and m.category_id.startswith(prefix)
+        ]
+
+        if not open_market_ids:
+            return {"status": "ignored", "reason": "no_open_market"}
+
+        async with app.state.lock:
+            for market_id in open_market_ids:
+                app.state.me.resolve(market_id, outcome)
+            _save()
+
+        return {
+            "status": "resolved",
+            "resolved_count": len(open_market_ids),
+            "outcome": outcome,
+            "market_ids": open_market_ids,
+        }
+
+    return {"status": "ignored", "reason": "unsupported_action"}
+
+
+# ---------------------------------------------------------------------------
 # User endpoints (API key required)
 # ---------------------------------------------------------------------------
 
@@ -536,30 +879,10 @@ async def admin_create_market(req: CreateMarketRequest,
                               _: AdminDep) -> CreateMarketResponse:
     """Create a new market. Supply either `b` (LMSR parameter) or `funding`
     (dollar amount — converted to appropriate b)."""
-    import math as _math
-
-    if req.funding is not None and req.b is not None:
-        raise APIError(400, "invalid_request",
-                       "Provide either 'b' or 'funding', not both")
-
-    n_outcomes = len(req.outcomes) if req.outcomes else 2
-
-    if req.funding is not None:
-        try:
-            funding = Decimal(req.funding)
-        except InvalidOperation:
-            raise APIError(400, "invalid_amount",
-                           f"Invalid funding: {req.funding}")
-        if funding <= ZERO:
-            raise APIError(400, "invalid_amount", "Funding must be positive")
-        # b = funding / ln(n)
-        b = funding / Decimal(str(_math.log(n_outcomes)))
-    else:
-        b_str = req.b or "100"
-        try:
-            b = Decimal(b_str)
-        except InvalidOperation:
-            raise APIError(400, "invalid_amount", f"Invalid b: {b_str}")
+    outcomes = req.outcomes or ["yes", "no"]
+    funding_config = {"funding": req.funding, "b": req.b,
+                      "funding_account_id": req.funding_account_id}
+    b, funding_account_id, _ = _market_funding_and_account(funding_config)
 
     async with app.state.lock:
         try:
@@ -569,9 +892,9 @@ async def admin_create_market(req: CreateMarketRequest,
                 category_id=req.category_id,
                 metadata=req.metadata,
                 b=b,
-                outcomes=req.outcomes,
+                outcomes=outcomes,
                 deadline=req.deadline,
-                funding_account_id=req.funding_account_id,
+                funding_account_id=funding_account_id,
             )
         except (ValueError, InsufficientBalance) as e:
             raise translate_engine_error(e)

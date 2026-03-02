@@ -12,8 +12,11 @@ Covers:
 """
 
 import asyncio
+import hashlib
 import os
 import re
+import hmac
+from json import dumps
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -24,6 +27,20 @@ from httpx import ASGITransport, AsyncClient
 # Set admin key before importing app
 os.environ["FUTARCHY_ADMIN_KEY"] = "test-admin-key"
 os.environ["FUTARCHY_STATE"] = "/tmp/futarchy_test_state.json"
+os.environ["WEBHOOK_TEST_SECRET"] = "test-webhook-secret"
+os.environ["FUTARCHY_WEBHOOK_CONFIG"] = dumps({
+    "repositories": [
+        {
+            "name": "futarchy-fi/agents",
+            "enabled": True,
+            "secret_env": "WEBHOOK_TEST_SECRET",
+            "category": "pr_merge",
+            "funding": "40",
+            "deadline_hours": 24,
+            "question_template": "Will PR #{pr_number} '{pr_title}' merge by {deadline}?",
+        }
+    ]
+})
 
 from core.api import app
 from core.auth import AuthStore
@@ -46,6 +63,7 @@ async def client():
     app.state.me = MarketEngine(app.state.risk)
     app.state.auth_store = AuthStore()
     app.state.lock = asyncio.Lock()
+    app.state.webhook_seen_delivery_ids = set()
 
     # Reset rate limiter
     rate_limiter.buckets.clear()
@@ -80,6 +98,14 @@ async def _mock_auth(client: AsyncClient, github_id=1,
 
 def _user_headers(api_key: str) -> dict:
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def _webhook_signature(body: bytes) -> str:
+    return "sha256=" + hmac.new(
+        os.environ["WEBHOOK_TEST_SECRET"].encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +218,147 @@ class TestAuthBoundaries:
         resp = await client.get("/v1/markets")
         assert resp.status_code == 200
         assert resp.json() == []
+
+
+class TestGitHubWebhooks:
+    async def test_opened_pr_creates_market(self, client):
+        payload = {
+            "action": "opened",
+            "repository": {
+                "full_name": "futarchy-fi/agents",
+            },
+            "pull_request": {
+                "number": 777,
+                "title": "Webhook market",
+                "html_url": "https://github.com/futarchy-fi/agents/pull/777",
+            },
+        }
+        body = dumps(payload).encode()
+        resp = await client.post(
+            "/v1/webhooks/github",
+            content=body,
+            headers={
+                "x-github-event": "pull_request",
+                "x-github-delivery": "delivery-open-1",
+                "x-hub-signature-256": _webhook_signature(body),
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "created"
+        assert data["category_id"].startswith("futarchy-fi/agents#777@")
+        assert data["market_id"] > 0
+
+        # duplicate event is ignored
+        resp = await client.post(
+            "/v1/webhooks/github",
+            content=body,
+            headers={
+                "x-github-event": "pull_request",
+                "x-github-delivery": "delivery-open-1",
+                "x-hub-signature-256": _webhook_signature(body),
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+
+        # verify open market created
+        markets = await client.get("/v1/markets", params={
+            "category": "pr_merge",
+            "category_id": "futarchy-fi/agents#777",
+        })
+        assert markets.status_code == 200
+        assert len(markets.json()) == 1
+
+    async def test_closed_pr_resolves_market(self, client):
+        # first create via open event
+        payload_open = {
+            "action": "opened",
+            "repository": {
+                "full_name": "futarchy-fi/agents",
+            },
+            "pull_request": {
+                "number": 778,
+                "title": "Resolve test",
+                "html_url": "https://github.com/futarchy-fi/agents/pull/778",
+            },
+        }
+        body_open = dumps(payload_open).encode()
+        resp = await client.post(
+            "/v1/webhooks/github",
+            content=body_open,
+            headers={
+                "x-github-event": "pull_request",
+                "x-github-delivery": "delivery-open-2",
+                "x-hub-signature-256": _webhook_signature(body_open),
+            },
+        )
+        assert resp.status_code == 200
+
+        payload_closed = dict(payload_open)
+        payload_closed.update({
+            "action": "closed",
+            "pull_request": {
+                "number": 778,
+                "title": "Resolve test",
+                "html_url": "https://github.com/futarchy-fi/agents/pull/778",
+                "merged": True,
+            },
+        })
+        body_closed = dumps(payload_closed).encode()
+        resp = await client.post(
+            "/v1/webhooks/github",
+            content=body_closed,
+            headers={
+                "x-github-event": "pull_request",
+                "x-github-delivery": "delivery-closed-2",
+                "x-hub-signature-256": _webhook_signature(body_closed),
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "resolved"
+        assert data["resolved_count"] == 1
+        assert data["outcome"] == "yes"
+
+        # no duplicate resolution
+        resp = await client.post(
+            "/v1/webhooks/github",
+            content=body_closed,
+            headers={
+                "x-github-event": "pull_request",
+                "x-github-delivery": "delivery-closed-2",
+                "x-hub-signature-256": _webhook_signature(body_closed),
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+
+    async def test_webhook_rejects_unknown_repo(self, client):
+        payload = {
+            "action": "opened",
+            "repository": {
+                "full_name": "external/example",
+            },
+            "pull_request": {
+                "number": 100,
+                "title": "Unknown repo",
+                "html_url": "https://github.com/external/example/pull/100",
+            },
+        }
+        body = dumps(payload).encode()
+        resp = await client.post(
+            "/v1/webhooks/github",
+            content=body,
+            headers={
+                "x-github-event": "pull_request",
+                "x-github-delivery": "delivery-unknown-1",
+                "x-hub-signature-256": _webhook_signature(body),
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "repo_not_tracked"
+
 
 
 # ---------------------------------------------------------------------------
