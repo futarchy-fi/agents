@@ -742,19 +742,35 @@ def _verify_webhook_signature(payload: bytes, signature: str,
 async def github_webhook(request: Request) -> WebhookResponse:
     """Receive GitHub pull_request webhook events for tracked repos."""
     body = await request.body()
-
-    # Parse payload
-    try:
-        payload = await request.json()
-    except Exception:
-        raise APIError(400, "invalid_payload", "Invalid JSON payload")
-
-    # Must be a pull_request event
     event_type = request.headers.get("x-github-event", "")
+
+    # Ping event — GitHub sends this on webhook creation.
+    # Handle before JSON parsing since GitHub may send form-encoded pings.
+    if event_type == "ping":
+        return WebhookResponse(
+            action="pong", skipped=True,
+            reason="Webhook configured successfully")
+
     if event_type != "pull_request":
         return WebhookResponse(
             action="ignored", skipped=True,
             reason=f"Event type '{event_type}' is not pull_request")
+
+    # Parse payload — supports both JSON and form-encoded (payload= field)
+    content_type = request.headers.get("content-type", "")
+    try:
+        if "application/json" in content_type:
+            payload = await request.json()
+        else:
+            # GitHub form-encoded: body is payload=<url-encoded JSON>
+            from urllib.parse import parse_qs
+            form = parse_qs(body.decode())
+            import json as _json
+            payload = _json.loads(form["payload"][0])
+    except Exception:
+        raise APIError(400, "invalid_payload",
+                       "Invalid payload. Set webhook content type to "
+                       "application/json.")
 
     action = payload.get("action", "")
     pr = payload.get("pull_request", {})
