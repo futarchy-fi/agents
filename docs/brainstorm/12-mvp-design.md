@@ -2,7 +2,7 @@
 
 ## What We're Building
 
-Conditional prediction markets on GitHub PRs, powered by LMSR AMMs. Two repos tracked initially: `futarchy-fi/agents` (our repo) and `openclaw/openclaw` (external).
+Conditional prediction markets on GitHub PRs, powered by LMSR AMMs. Tracked repos currently include: `futarchy-fi/agents` (our repo) and `snapshot-labs/sx-monorepo` (external).
 
 Anyone (human or agent) can bet on whether a PR will be merged. Markets are conditional: if the PR isn't evaluated (merged or rejected) within 24 hours, the market is void and all trades revert.
 

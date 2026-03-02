@@ -7,7 +7,9 @@ on:
 
 env:
   API_URL: https://api.futarchy.ai
-  REPO: futarchy-fi/agents
+  TRACKED_REPOS: |
+    futarchy-fi/agents
+    snapshot-labs/sx-monorepo
   TREASURY_ACCOUNT_ID: ${{ secrets.FUTARCHY_TREASURY_ID }}
   # Rollover uses full budget at once (no ramp — price discovery happened yesterday)
   LIQUIDITY_BUDGET: "200"
@@ -57,49 +59,55 @@ jobs:
             fi
           done
 
-          # Step 2: For each open PR, ensure a market exists for today
+          # Step 2: For each tracked repo, ensure a market exists for each open PR today
           # Rollover markets get full liquidity at once (no ramp)
-          gh pr list --repo "${REPO}" --state open --json number,title --limit 100 | \
-            jq -c '.[]' | while read -r PR; do
-            PR_NUM=$(echo "$PR" | jq -r '.number')
-            PR_TITLE=$(echo "$PR" | jq -r '.title')
-            CATEGORY_ID="${REPO}#${PR_NUM}@${TODAY}"
+          while IFS= read -r REPO; do
+            [ -z "$REPO" ] && continue
+            echo "-- Scanning open PRs for ${REPO}"
 
-            # Check if an open market already exists for this PR today
-            EXISTING=$(curl -sf "${API_URL}/v1/markets?category=pr_merge&category_id=$(jq -rn --arg v "$CATEGORY_ID" '$v | @uri')&status=open")
-            COUNT=$(echo "$EXISTING" | jq 'length')
+            gh pr list --repo "${REPO}" --state open --json number,title --limit 100 | \
+              jq -c '.[]' | while read -r PR; do
+              PR_NUM=$(echo "$PR" | jq -r '.number')
+              PR_TITLE=$(echo "$PR" | jq -r '.title')
+              CATEGORY_ID="${REPO}#${PR_NUM}@${TODAY}"
 
-            if [ "$COUNT" -eq 0 ]; then
-              QUESTION="Will PR #${PR_NUM} '${PR_TITLE}' merge?"
+              # Check if an open market already exists for this PR today
+              EXISTING=$(curl -sf "${API_URL}/v1/markets?category=pr_merge&category_id=$(jq -rn --arg v "$CATEGORY_ID" '$v | @uri')&status=open")
+              COUNT=$(echo "$EXISTING" | jq 'length')
 
-              echo "Creating market for PR #${PR_NUM}: ${CATEGORY_ID} (full budget: ${LIQUIDITY_BUDGET}, treasury: ${TREASURY_ACCOUNT_ID})"
-              curl -sf "${API_URL}/v1/admin/markets" \
-                -H "Authorization: Bearer ${ADMIN_KEY}" \
-                -H "Content-Type: application/json" \
-                -d "$(jq -n \
-                  --arg q "$QUESTION" \
-                  --arg cid "$CATEGORY_ID" \
-                  --arg dl "$DEADLINE" \
-                  --arg funding "$LIQUIDITY_BUDGET" \
-                  --argjson funding_acct "${TREASURY_ACCOUNT_ID}" \
-                  --argjson pr_num "$PR_NUM" \
-                  '{
-                    question: $q,
-                    category: "pr_merge",
-                    category_id: $cid,
-                    funding: $funding,
-                    funding_account_id: $funding_acct,
-                    deadline: $dl,
-                    metadata: {
-                      market_type: "conditional",
-                      pr_number: $pr_num,
-                      repo: "'"${REPO}"'",
-                      resolution_rules: "YES if merged, NO if closed without merge, VOID if deadline expires"
-                    }
-                  }')"
-            else
-              echo "Market already exists for PR #${PR_NUM} today"
-            fi
-          done
+              if [ "$COUNT" -eq 0 ]; then
+                QUESTION="Will PR #${PR_NUM} '${PR_TITLE}' merge?"
+
+                echo "Creating market for PR #${PR_NUM}: ${CATEGORY_ID} (full budget: ${LIQUIDITY_BUDGET}, treasury: ${TREASURY_ACCOUNT_ID})"
+                curl -sf "${API_URL}/v1/admin/markets" \
+                  -H "Authorization: Bearer ${ADMIN_KEY}" \
+                  -H "Content-Type: application/json" \
+                  -d "$(jq -n \
+                    --arg q "$QUESTION" \
+                    --arg cid "$CATEGORY_ID" \
+                    --arg dl "$DEADLINE" \
+                    --arg funding "$LIQUIDITY_BUDGET" \
+                    --argjson funding_acct "${TREASURY_ACCOUNT_ID}" \
+                    --argjson pr_num "$PR_NUM" \
+                    --arg repo "$REPO" \
+                    '{
+                      question: $q,
+                      category: "pr_merge",
+                      category_id: $cid,
+                      funding: $funding,
+                      funding_account_id: $funding_acct,
+                      deadline: $dl,
+                      metadata: {
+                        market_type: "conditional",
+                        pr_number: $pr_num,
+                        repo: $repo,
+                        resolution_rules: "YES if merged, NO if closed without merge, VOID if deadline expires"
+                      }
+                    }')"
+              else
+                echo "Market already exists for PR #${PR_NUM} today"
+              fi
+            done
+          done <<< "$TRACKED_REPOS"
 
           echo "=== Rollover complete ==="
