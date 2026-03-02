@@ -13,7 +13,10 @@ Covers:
 
 import asyncio
 import os
+import json
 import re
+import hashlib
+import hmac
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -45,6 +48,7 @@ async def client():
     app.state.risk = RiskEngine()
     app.state.me = MarketEngine(app.state.risk)
     app.state.auth_store = AuthStore()
+    app.state.webhook_repos = {}
     app.state.lock = asyncio.Lock()
 
     # Reset rate limiter
@@ -74,6 +78,37 @@ async def _mock_auth(client: AsyncClient, github_id=1,
 
 def _user_headers(api_key: str) -> dict:
     return {"Authorization": f"Bearer {api_key}"}
+
+
+def _webhook_payload(
+    repo_name="futarchy-fi/agents",
+    action="opened",
+    number=1,
+    title="Add feature",
+    merged=False,
+    state="open",
+) -> dict:
+    return {
+        "action": action,
+        "repository": {"full_name": repo_name},
+        "pull_request": {
+            "number": number,
+            "title": title,
+            "state": state,
+            "merged": merged,
+            "html_url": f"https://github.com/{repo_name}/pull/{number}",
+            "user": {"login": "octocat"},
+            "base": {"repo": {"full_name": repo_name}, "ref": "main"},
+            "head": {"ref": "feature"},
+        },
+    }
+
+
+def _sign_webhook(secret: str, payload: dict) -> tuple[bytes, str]:
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    signature = "sha256=" + hmac.new(
+        secret.encode(), body, hashlib.sha256).hexdigest()
+    return body, signature
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +222,105 @@ class TestAuthBoundaries:
         assert resp.json() == []
 
 
+class TestWebhookRegistration:
+    async def test_register_webhook_repo_requires_admin(self, client):
+        resp = await client.post("/v1/admin/webhook-repos", json={
+            "repo_name": "futarchy-fi/agents",
+            "secret": "secret",
+            "category": "pr_merge",
+        })
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] in {"auth_required", "admin_required"}
+
+    async def test_webhook_rejects_unapproved_repo(self, client):
+        payload = _webhook_payload()
+        body, signature = _sign_webhook("secret", payload)
+        resp = await client.post(
+            "/v1/webhooks/github",
+            content=body,
+            headers={
+                "X-Hub-Signature-256": signature,
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "repo_not_approved"
+
+    async def test_webhook_rejects_invalid_signature(self, client):
+        os.environ["WEBHOOK_TEST_SECRET"] = "super-secret"
+        reg = await client.post(
+            "/v1/admin/webhook-repos",
+            headers=ADMIN_HEADERS,
+            json={
+                "repo_name": "futarchy-fi/agents",
+                "secret_env": "WEBHOOK_TEST_SECRET",
+                "category": "pr_merge",
+            },
+        )
+        assert reg.status_code == 200
+
+        payload = _webhook_payload(number=100)
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        resp = await client.post(
+            "/v1/webhooks/github",
+            content=body,
+            headers={
+                "X-Hub-Signature-256": "sha256=bad",
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "invalid_signature"
+
+    async def test_webhook_creates_and_resolves_market(self, client):
+        os.environ["WEBHOOK_TEST_SECRET"] = "super-secret"
+        reg = await client.post(
+            "/v1/admin/webhook-repos",
+            headers=ADMIN_HEADERS,
+            json={
+                "repo_name": "futarchy-fi/agents",
+                "secret_env": "WEBHOOK_TEST_SECRET",
+                "category": "pr_merge",
+                "deadline_hours": 6,
+                "outcomes": ["yes", "no"],
+            },
+        )
+        assert reg.status_code == 200
+        assert reg.json()["name"] == "futarchy-fi/agents"
+
+        payload = _webhook_payload(action="opened", number=42)
+        body, signature = _sign_webhook("super-secret", payload)
+        created = await client.post(
+            "/v1/webhooks/github",
+            content=body,
+            headers={
+                "X-Hub-Signature-256": signature,
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert created.status_code == 200
+        data = created.json()
+        assert data["status"] == "created"
+        market_id = data["market_id"]
+        assert market_id in app.state.me.markets
+
+        close_payload = _webhook_payload(
+            action="closed", number=42, state="closed", merged=True)
+        close_body, close_signature = _sign_webhook("super-secret", close_payload)
+        resolved = await client.post(
+            "/v1/webhooks/github",
+            content=close_body,
+            headers={
+                "X-Hub-Signature-256": close_signature,
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert resolved.status_code == 200
+        result = resolved.json()
+        assert result["status"] == "resolved"
+        assert result["market_id"] == market_id
+        assert result["outcome"] == "yes"
+        assert app.state.me.markets[market_id].status == "resolved"
 # ---------------------------------------------------------------------------
 # Public Market Data
 # ---------------------------------------------------------------------------

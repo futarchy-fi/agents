@@ -153,7 +153,7 @@ def _load_market(d: dict) -> Market:
 # Schema versioning
 # ---------------------------------------------------------------------------
 
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 
 
 def _migrate_1_to_2(state: dict) -> dict:
@@ -163,7 +163,17 @@ def _migrate_1_to_2(state: dict) -> dict:
     return state
 
 
-_MIGRATIONS: dict[int, callable] = {1: _migrate_1_to_2}
+def _migrate_2_to_3(state: dict) -> dict:
+    """Add webhook repo registry section."""
+    state["webhook_repos"] = {}
+    state["version"] = 3
+    return state
+
+
+_MIGRATIONS: dict[int, callable] = {
+    1: _migrate_1_to_2,
+    2: _migrate_2_to_3,
+}
 
 
 def _apply_migrations(state: dict) -> dict:
@@ -184,7 +194,7 @@ def _apply_migrations(state: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
-                  path: str, auth_store=None) -> None:
+                  path: str, auth_store=None, webhook_repos=None) -> None:
     """
     Save complete RE + ME + auth state to a JSON file.
     Atomic: writes to .tmp then renames.
@@ -196,6 +206,7 @@ def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
         "transactions": [_serialize(tx) for tx in risk.transactions],
         "markets": [_serialize(m) for m in market_engine.markets.values()],
         "auth": _serialize_auth(auth_store) if auth_store else {"users": []},
+        "webhook_repos": _serialize(webhook_repos or {}),
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -256,6 +267,35 @@ def _load_auth(auth_data: dict):
         store.local_users[username] = user
         store.key_to_user[user.api_key_hash] = user
     return store
+
+
+def _load_webhook_repos(auth_data: dict):
+    """Load webhook repo registry map from snapshot data."""
+    raw = auth_data or {}
+    if isinstance(raw, list):
+        repos = {}
+        for repo in raw:
+            if not isinstance(repo, dict):
+                continue
+            name = repo.get("name")
+            if name:
+                repos[str(name)] = repo
+        return repos
+    if isinstance(raw, dict):
+        return {str(name): data for name, data in raw.items()}
+    return {}
+
+
+def load_webhook_repos(path: str) -> dict:
+    """
+    Load webhook repo registry from snapshot.
+    Applies migrations automatically.
+    """
+    with open(path) as f:
+        state = json.load(f)
+
+    state = _apply_migrations(state)
+    return _load_webhook_repos(state.get("webhook_repos", {}))
 
 
 def load_snapshot(path: str) -> tuple:

@@ -7,10 +7,15 @@ Admin endpoints (admin key): mint, create market, resolve, void.
 """
 
 import asyncio
+import hashlib
+import hmac
+import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from math import log
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
@@ -20,6 +25,7 @@ from core.api_models import (
     GitHubAuthRequest, AuthResponse,
     RegisterRequest, RegisterResponse,
     DeviceFlowStartRequest, DeviceFlowResponse, DeviceFlowPollRequest,
+    RegisterWebhookRepoRequest, WebhookRepoResponse,
     AccountResponse, LockResponse,
     MarketSummary, MarketDetail, PositionEntry, TradeResponse,
     DepthEntry, DepthResponse,
@@ -39,7 +45,7 @@ from core.lmsr import max_loss, prices as lmsr_prices, cost_to_move_price
 from core.market_engine import MarketEngine
 from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
 from core.models import ZERO, reset_counters
-from core.persistence import save_snapshot, load_snapshot
+from core.persistence import save_snapshot, load_snapshot, load_webhook_repos
 from core.risk_engine import RiskEngine, InsufficientBalance
 
 
@@ -48,20 +54,83 @@ INITIAL_CREDITS = Decimal(os.environ.get("INITIAL_CREDITS", "100"))
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_repo_name(name: str) -> str:
+    return name.strip().lower()
+
+
+def _repo_name_from_payload(payload: dict) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    repo = payload.get("repository")
+    if isinstance(repo, dict):
+        full_name = repo.get("full_name")
+        if isinstance(full_name, str) and full_name.strip():
+            return _normalize_repo_name(full_name)
+
+    # Fallback for payloads lacking top-level repository block.
+    pr = payload.get("pull_request")
+    if isinstance(pr, dict):
+        repo = pr.get("base", {}).get("repo")
+        if isinstance(repo, dict):
+            full_name = repo.get("full_name")
+            if isinstance(full_name, str) and full_name.strip():
+                return _normalize_repo_name(full_name)
+    return None
+
+
+def _resolve_webhook_secret(repo: dict) -> str | None:
+    secret_env = repo.get("secret_env")
+    if isinstance(secret_env, str) and secret_env.strip():
+        return os.environ.get(secret_env)
+    return repo.get("secret")
+
+
+def _verify_signature(secret: str, body: bytes, signature: str) -> bool:
+    if not signature.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature[7:])
+
+
+def _public_webhook_repo(cfg: dict) -> dict:
+    return {
+        "name": cfg["name"],
+        "enabled": cfg.get("enabled", True),
+        "category": cfg.get("category", "pr_merge"),
+        "funding": cfg.get("funding"),
+        "b": cfg.get("b"),
+        "deadline_hours": cfg.get("deadline_hours", 24),
+        "outcomes": cfg.get("outcomes", ["yes", "no"]),
+        "question_template": cfg.get("question_template",
+                                   "Will PR #{pr_number} '{pr_title}' "
+                                   "merge by {deadline}?"),
+        "metadata": cfg.get("metadata", {}),
+        "secret_env": cfg.get("secret_env"),
+        "has_secret": bool(cfg.get("secret")) or bool(cfg.get("secret_env")),
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load state
     if os.path.exists(STATE_PATH):
         risk, me, auth_store = load_snapshot(STATE_PATH)
+        webhook_repos = load_webhook_repos(STATE_PATH)
     else:
         reset_counters()
         risk = RiskEngine()
         me = MarketEngine(risk)
         auth_store = AuthStore()
+        webhook_repos = {}
 
     app.state.risk = risk
     app.state.me = me
     app.state.auth_store = auth_store or AuthStore()
+    app.state.webhook_repos = webhook_repos
     app.state.lock = asyncio.Lock()
     yield
 
@@ -73,10 +142,77 @@ app.add_exception_handler(APIError, api_error_handler)
 def _save():
     """Save state to disk. Called after every mutation."""
     save_snapshot(app.state.risk, app.state.me, STATE_PATH,
-                  auth_store=app.state.auth_store)
+                  auth_store=app.state.auth_store,
+                  webhook_repos=app.state.webhook_repos)
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+
+def _format_webhook_question(template: str, repo_name: str,
+                            pull_request: dict) -> str:
+    title = pull_request.get("title", "")
+    title_snippet = title if len(title) < 180 else title[:180] + "…"
+    mapping = {
+        "repo_name": repo_name,
+        "pr_number": pull_request.get("number", ""),
+        "pr_title": title_snippet,
+        "pr_url": pull_request.get("html_url", ""),
+        "author": (pull_request.get("user") or {}).get("login", ""),
+        "head_ref": ((pull_request.get("head") or {}).get("ref", "")),
+        "base_ref": ((pull_request.get("base") or {}).get("ref", "")),
+        "deadline": _now_iso(),
+    }
+
+    class _QuestionMap(dict):
+        def __missing__(self, key):
+            return f"{{{key}}}"
+
+    return template.format_map(_QuestionMap(mapping))
+
+
+def _webhook_deadline(hours: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+
+
+def _webhook_outcomes(repo_cfg: dict) -> list[str]:
+    outcomes = repo_cfg.get("outcomes")
+    if isinstance(outcomes, list) and outcomes:
+        cleaned = [str(x).strip() for x in outcomes if str(x).strip()]
+        if len(cleaned) >= 2:
+            return cleaned
+    return ["yes", "no"]
+
+
+def _webhook_market_b(repo_cfg: dict) -> Decimal:
+    funding = repo_cfg.get("funding")
+    outcomes = _webhook_outcomes(repo_cfg)
+    if funding:
+        funding_dec = Decimal(funding)
+        if funding_dec <= ZERO:
+            raise APIError(400, "invalid_request",
+                           "Webhook funding must be positive")
+        return funding_dec / Decimal(str(log(len(outcomes))))
+
+    b = repo_cfg.get("b", "100")
+    b_dec = Decimal(str(b))
+    if b_dec <= ZERO:
+        raise APIError(400, "invalid_request", "Webhook b must be positive")
+    return b_dec
+
+
+def _find_open_market_for_category(category_id: str):
+    for m in app.state.me.markets.values():
+        if m.category_id == category_id and m.status == "open":
+            return m
+    return None
+
+
+def _find_any_market_for_category(category_id: str):
+    for m in app.state.me.markets.values():
+        if m.category_id == category_id:
+            return m
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +381,274 @@ async def auth_device_poll(req: DeviceFlowPollRequest) -> AuthResponse:
         account_id=user.account_id,
         github_login=user.github_login,
     )
+
+
+# ---------------------------------------------------------------------------
+# Webhook registration (admin-only)
+# ---------------------------------------------------------------------------
+
+@app.get("/v1/admin/webhook-repos")
+async def list_webhook_repos(_: AdminDep) -> list[WebhookRepoResponse]:
+    repos = sorted(
+        app.state.webhook_repos.values(),
+        key=lambda r: r["name"],
+    )
+    return [WebhookRepoResponse(**_public_webhook_repo(r)) for r in repos]
+
+
+@app.post("/v1/admin/webhook-repos")
+async def register_webhook_repo(req: RegisterWebhookRepoRequest,
+                               _: AdminDep) -> WebhookRepoResponse:
+    repo_name = _normalize_repo_name(req.repo_name)
+    if not repo_name:
+        raise APIError(400, "invalid_request", "repo_name is required")
+
+    existing = app.state.webhook_repos.get(repo_name, {})
+
+    if req.secret and req.secret_env:
+        raise APIError(
+            400, "invalid_request",
+            "Provide either secret or secret_env, not both")
+
+    secret = req.secret
+    secret_env = req.secret_env
+    if secret_env is not None:
+        secret_env = secret_env.strip()
+        if not secret_env:
+            raise APIError(400, "invalid_request",
+                           "secret_env cannot be empty")
+        if not os.environ.get(secret_env):
+            raise APIError(400, "invalid_request",
+                           f"Secret env var '{secret_env}' is not set")
+        secret = None
+
+    if secret is None and not secret_env:
+        if not existing:
+            raise APIError(400, "invalid_request",
+                           "Provide either secret or secret_env")
+        secret = existing.get("secret")
+        secret_env = existing.get("secret_env")
+
+    # Keep compatibility for updates that only toggle enabled/metadata.
+    outcomes = req.outcomes if req.outcomes is not None else existing.get(
+        "outcomes", ["yes", "no"])
+    if not outcomes or len(outcomes) < 2:
+        raise APIError(400, "invalid_request", "outcomes cannot be empty")
+
+    funding = req.funding if req.funding is not None else existing.get("funding")
+    b = req.b if req.b is not None else existing.get("b")
+    if funding is not None and b is not None:
+        raise APIError(400, "invalid_request",
+                       "Provide either 'funding' or 'b', not both")
+
+    try:
+        if funding is not None:
+            if Decimal(str(funding)) <= ZERO:
+                raise InvalidOperation("zero")
+        elif b is not None:
+            if Decimal(str(b)) <= ZERO:
+                raise InvalidOperation("zero")
+        elif not existing:
+            # New repo requires at least one funding parameter.
+            req_b = Decimal(str(req.b or "100"))
+            b = str(req_b)
+    except InvalidOperation:
+        raise APIError(400, "invalid_request", "funding/b must be numeric")
+
+    deadline_hours = req.deadline_hours
+    if deadline_hours <= 0:
+        raise APIError(400, "invalid_request", "deadline_hours must be positive")
+
+    metadata = req.metadata if req.metadata is not None else existing.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise APIError(400, "invalid_request", "metadata must be an object")
+
+    repo_cfg = {
+        "name": repo_name,
+        "enabled": req.enabled,
+        "secret": secret,
+        "secret_env": secret_env,
+        "category": req.category,
+        "funding": str(funding) if funding is not None else None,
+        "b": str(b) if b is not None else None,
+        "deadline_hours": req.deadline_hours,
+        "outcomes": outcomes,
+        "question_template": req.question_template,
+        "metadata": metadata,
+    }
+    if not req.category:
+        repo_cfg["category"] = "pr_merge"
+
+    if existing:
+        # Preserve secret fallback when only toggling enabled/metadata.
+        if secret is None and not secret_env:
+            repo_cfg["secret"] = repo_cfg["secret"] or existing.get("secret")
+            repo_cfg["secret_env"] = repo_cfg["secret_env"] or existing.get("secret_env")
+
+    async with app.state.lock:
+        app.state.webhook_repos[repo_name] = repo_cfg
+        _save()
+
+    return WebhookRepoResponse(**_public_webhook_repo(repo_cfg))
+
+
+@app.delete("/v1/admin/webhook-repos/{repo_name:path}")
+async def delete_webhook_repo(repo_name: str, _: AdminDep) -> dict:
+    key = _normalize_repo_name(repo_name)
+    if key not in app.state.webhook_repos:
+        raise APIError(404, "webhook_repo_not_found",
+                       f"Repo '{key}' is not registered")
+
+    async with app.state.lock:
+        app.state.webhook_repos.pop(key, None)
+        _save()
+
+    return {"name": key, "status": "deleted"}
+
+
+@app.post("/v1/webhooks/github")
+async def webhook_receiver(request: Request) -> dict:
+    event = request.headers.get("X-GitHub-Event", "").lower()
+    if event != "pull_request":
+        raise APIError(400, "unsupported_event",
+                       "Only pull_request events are supported")
+
+    body = await request.body()
+    if not body:
+        raise APIError(400, "invalid_request", "Request body is empty")
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise APIError(400, "invalid_payload", "Invalid JSON payload")
+
+    if not isinstance(payload, dict):
+        raise APIError(400, "invalid_payload", "Payload must be a JSON object")
+
+    repo_name = _repo_name_from_payload(payload)
+    if not repo_name:
+        raise APIError(400, "invalid_payload",
+                       "Missing repository name in payload")
+
+    repo = app.state.webhook_repos.get(repo_name)
+    if repo is None or not repo.get("enabled", True):
+        raise APIError(403, "repo_not_approved",
+                       f"Repository '{repo_name}' is not approved")
+
+    secret = _resolve_webhook_secret(repo)
+    if not secret:
+        raise APIError(500, "webhook_secret_missing",
+                       f"No webhook secret configured for '{repo_name}'")
+
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    if not _verify_signature(secret, body, signature):
+        raise APIError(403, "invalid_signature", "Invalid webhook signature")
+
+    action = payload.get("action")
+    if action not in {"opened", "reopened", "synchronize", "closed"}:
+        return {"status": "ignored", "action": action}
+
+    pr = payload.get("pull_request")
+    if not isinstance(pr, dict):
+        raise APIError(400, "invalid_payload", "Missing pull_request payload")
+
+    try:
+        pr_number = int(pr.get("number"))
+    except (TypeError, ValueError):
+        raise APIError(400, "invalid_payload", "pull_request.number is required")
+
+    category_id = f"{repo_name}#{pr_number}"
+
+    if action == "closed":
+        merged = bool(pr.get("merged"))
+        outcome = "yes" if merged else "no"
+
+        async with app.state.lock:
+            market = _find_open_market_for_category(category_id)
+            if market is None:
+                return {
+                    "status": "ignored",
+                    "action": action,
+                    "reason": "no_open_market",
+                    "category_id": category_id,
+                }
+
+            if outcome not in market.outcomes:
+                raise APIError(400, "invalid_request",
+                               f"Configured outcomes do not include '{outcome}'")
+            try:
+                app.state.me.resolve(market.id, outcome)
+                _save()
+            except (ValueError, InsufficientBalance) as e:
+                raise translate_engine_error(e)
+
+        return {
+            "status": "resolved",
+            "market_id": market.id,
+            "outcome": outcome,
+        }
+
+    existing_market = _find_any_market_for_category(category_id)
+    if existing_market is not None:
+        if existing_market.status == "open":
+            return {
+                "status": "exists",
+                "market_id": existing_market.id,
+                "category_id": category_id,
+            }
+        return {
+            "status": "ignored",
+            "action": action,
+            "reason": "market_already_closed",
+            "category_id": category_id,
+            "market_id": existing_market.id,
+        }
+
+    outcomes = _webhook_outcomes(repo)
+    question = _format_webhook_question(
+        repo.get("question_template", ""),
+        repo_name,
+        pr,
+    )
+    metadata = dict(repo.get("metadata") or {})
+    deadline = _webhook_deadline(int(repo.get("deadline_hours", 24)))
+    metadata["webhook"] = {
+        "repo": repo_name,
+        "event": action,
+        "pull_request": {
+            "number": pr_number,
+            "title": pr.get("title", ""),
+            "state": pr.get("state"),
+            "url": pr.get("html_url"),
+            "deadline": deadline,
+        },
+    }
+
+    try:
+        b = _webhook_market_b(repo)
+    except (InvalidOperation, ValueError) as e:
+        raise APIError(400, "invalid_request", str(e))
+
+    async with app.state.lock:
+        try:
+            market, _ = app.state.me.create_market(
+                question=question,
+                category=repo.get("category", "pr_merge"),
+                category_id=category_id,
+                metadata=metadata,
+                b=b,
+                outcomes=outcomes,
+                deadline=deadline,
+            )
+            _save()
+        except (ValueError, InsufficientBalance) as e:
+            raise translate_engine_error(e)
+
+    return {
+        "status": "created",
+        "market_id": market.id,
+        "category_id": category_id,
+    }
 
 
 # ---------------------------------------------------------------------------

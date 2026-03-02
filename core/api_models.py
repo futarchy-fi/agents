@@ -3,7 +3,7 @@ Pydantic request/response models for the API.
 All monetary values are strings to avoid IEEE 754 issues.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # --- Auth ---
@@ -29,6 +29,37 @@ class RegisterResponse(BaseModel):
     api_key: str
     account_id: int
     username: str
+
+
+# --- Webhook management ---
+
+class RegisterWebhookRepoRequest(BaseModel):
+    repo_name: str
+    enabled: bool = True
+    secret: str | None = None
+    secret_env: str | None = None
+    category: str = "pr_merge"
+    funding: str | None = None
+    b: str | None = None
+    deadline_hours: int = 24
+    outcomes: list[str] | None = None
+    question_template: str = "Will PR #{pr_number} '{pr_title}' merge by {deadline}?"
+    metadata: dict = Field(default_factory=dict)
+
+
+class WebhookRepoResponse(BaseModel):
+    name: str
+    enabled: bool
+    category: str
+    funding: str | None = None
+    b: str | None = None
+    deadline_hours: int
+    outcomes: list[str]
+    question_template: str
+    metadata: dict
+    secret_env: str | None = None
+    has_secret: bool
+
 
 class DeviceFlowResponse(BaseModel):
     device_code: str
