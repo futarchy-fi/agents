@@ -321,6 +321,70 @@ class TestWebhookRegistration:
         assert result["market_id"] == market_id
         assert result["outcome"] == "yes"
         assert app.state.me.markets[market_id].status == "resolved"
+
+    async def test_webhook_rolls_over_market(self, client):
+        os.environ["WEBHOOK_TEST_SECRET"] = "super-secret"
+        reg = await client.post(
+            "/v1/admin/webhook-repos",
+            headers=ADMIN_HEADERS,
+            json={
+                "repo_name": "futarchy-fi/agents",
+                "secret_env": "WEBHOOK_TEST_SECRET",
+                "category": "pr_merge",
+            },
+        )
+        assert reg.status_code == 200
+
+        opened = _webhook_payload(action="opened", number=99)
+        opened_body, opened_signature = _sign_webhook("super-secret", opened)
+        first = await client.post(
+            "/v1/webhooks/github",
+            content=opened_body,
+            headers={
+                "X-Hub-Signature-256": opened_signature,
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert first.status_code == 200
+        assert first.json()["status"] == "created"
+        first_market_id = first.json()["market_id"]
+
+        closed = _webhook_payload(
+            action="closed", number=99, state="closed", merged=False)
+        closed_body, closed_signature = _sign_webhook("super-secret", closed)
+        closed_resp = await client.post(
+            "/v1/webhooks/github",
+            content=closed_body,
+            headers={
+                "X-Hub-Signature-256": closed_signature,
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert closed_resp.status_code == 200
+        assert closed_resp.json()["status"] == "resolved"
+        assert closed_resp.json()["market_id"] == first_market_id
+
+        reopened = _webhook_payload(
+            action="reopened", number=99, state="open")
+        reopened_body, reopened_signature = _sign_webhook("super-secret", reopened)
+        second = await client.post(
+            "/v1/webhooks/github",
+            content=reopened_body,
+            headers={
+                "X-Hub-Signature-256": reopened_signature,
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert second.status_code == 200
+        assert second.json()["status"] == "created"
+
+        second_market_id = second.json()["market_id"]
+        assert second_market_id != first_market_id
+
+        markets = await client.get(
+            "/v1/markets", params={"category_id": "futarchy-fi/agents#99"})
+        assert markets.status_code == 200
+        assert len(markets.json()) == 2
 # ---------------------------------------------------------------------------
 # Public Market Data
 # ---------------------------------------------------------------------------

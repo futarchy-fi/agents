@@ -202,17 +202,54 @@ def _webhook_market_b(repo_cfg: dict) -> Decimal:
 
 
 def _find_open_market_for_category(category_id: str):
+    if not app.state.me:
+        return None
+    open_market = None
     for m in app.state.me.markets.values():
-        if m.category_id == category_id and m.status == "open":
-            return m
-    return None
+        if m.status != "open":
+            continue
+        if m.category_id == category_id:
+            if open_market is None or m.id > open_market.id:
+                open_market = m
+    return open_market
 
 
 def _find_any_market_for_category(category_id: str):
+    if not app.state.me:
+        return None
     for m in app.state.me.markets.values():
         if m.category_id == category_id:
             return m
     return None
+
+
+def _webhook_pr_category(repo_name: str, pr_number: int) -> str:
+    return f"{repo_name}#{pr_number}"
+
+
+def _webhook_market_matches_pr(base_category_id: str, market_category_id: str) -> bool:
+    return (market_category_id == base_category_id
+            or market_category_id.startswith(f"{base_category_id}@"))
+
+
+def _find_open_webhook_market(base_category_id: str):
+    open_market = None
+    for m in app.state.me.markets.values():
+        if not _webhook_market_matches_pr(base_category_id, m.category_id):
+            continue
+        if m.status != "open":
+            continue
+        if open_market is None or m.id > open_market.id:
+            open_market = m
+    return open_market
+
+
+def _next_webhook_category_id(base_category_id: str) -> str:
+    count = 0
+    for m in app.state.me.markets.values():
+        if _webhook_market_matches_pr(base_category_id, m.category_id):
+            count += 1
+    return base_category_id if count == 0 else f"{base_category_id}@{count}"
 
 
 # ---------------------------------------------------------------------------
@@ -557,20 +594,20 @@ async def webhook_receiver(request: Request) -> dict:
     except (TypeError, ValueError):
         raise APIError(400, "invalid_payload", "pull_request.number is required")
 
-    category_id = f"{repo_name}#{pr_number}"
+    base_category_id = _webhook_pr_category(repo_name, pr_number)
 
     if action == "closed":
         merged = bool(pr.get("merged"))
         outcome = "yes" if merged else "no"
 
         async with app.state.lock:
-            market = _find_open_market_for_category(category_id)
+            market = _find_open_webhook_market(base_category_id)
             if market is None:
                 return {
                     "status": "ignored",
                     "action": action,
                     "reason": "no_open_market",
-                    "category_id": category_id,
+                    "category_id": base_category_id,
                 }
 
             if outcome not in market.outcomes:
@@ -586,22 +623,6 @@ async def webhook_receiver(request: Request) -> dict:
             "status": "resolved",
             "market_id": market.id,
             "outcome": outcome,
-        }
-
-    existing_market = _find_any_market_for_category(category_id)
-    if existing_market is not None:
-        if existing_market.status == "open":
-            return {
-                "status": "exists",
-                "market_id": existing_market.id,
-                "category_id": category_id,
-            }
-        return {
-            "status": "ignored",
-            "action": action,
-            "reason": "market_already_closed",
-            "category_id": category_id,
-            "market_id": existing_market.id,
         }
 
     outcomes = _webhook_outcomes(repo)
@@ -630,6 +651,15 @@ async def webhook_receiver(request: Request) -> dict:
         raise APIError(400, "invalid_request", str(e))
 
     async with app.state.lock:
+        existing_market = _find_open_webhook_market(base_category_id)
+        if existing_market is not None:
+            return {
+                "status": "exists",
+                "market_id": existing_market.id,
+                "category_id": existing_market.category_id,
+            }
+
+        category_id = _next_webhook_category_id(base_category_id)
         try:
             market, _ = app.state.me.create_market(
                 question=question,
