@@ -19,8 +19,11 @@ jobs:
   pr-opened:
     if: github.event.action == 'opened'
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - name: Create market with initial liquidity
+        id: create-market
         env:
           ADMIN_KEY: ${{ secrets.FUTARCHY_ADMIN_KEY }}
         run: |
@@ -80,6 +83,39 @@ jobs:
 
           MID=$(echo "$RESULT" | jq -r '.market_id')
           echo "Created market ${MID}: ${CATEGORY_ID} (funded from treasury ${TREASURY_ACCOUNT_ID})"
+
+          echo "MID=${MID}" >> "$GITHUB_OUTPUT"
+          echo "QUESTION=${QUESTION}" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR with market link
+        if: steps.create-market.outputs.MID != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MID="${{ steps.create-market.outputs.MID }}"
+          QUESTION="${{ steps.create-market.outputs.QUESTION }}"
+          DASHBOARD="https://api.futarchy.ai/#/market/${MID}"
+
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "## Prediction Market Created
+
+          **${QUESTION}**
+
+          | Outcome | Starting Price |
+          |---------|---------------|
+          | Yes | 50¢ |
+          | No | 50¢ |
+
+          **[View Market on Dashboard](${DASHBOARD})**
+
+          Trade with the CLI:
+          \`\`\`
+          futarchy buy ${MID} yes 10    # bet 10 credits on Yes
+          futarchy buy ${MID} no 10     # bet 10 credits on No
+          \`\`\`
+
+          Prices update in real-time as traders take positions. Market resolves automatically when the PR is merged or closed."
 
   pr-closed:
     if: github.event.action == 'closed'
