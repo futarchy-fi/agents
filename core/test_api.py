@@ -14,6 +14,7 @@ Covers:
 import asyncio
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -1220,3 +1221,86 @@ class TestWebhook:
         assert "liquidity_steps_remaining" in meta
         assert "next_liquidity_at" in meta
         assert detail["deadline"] is not None
+
+
+class TestExpiredMarketReconciliation:
+    async def test_startup_voids_expired_markets_loaded_from_snapshot(
+        self, tmp_path
+    ):
+        import core.api as api_module
+        from core.persistence import load_snapshot, save_snapshot
+
+        reset_counters()
+        risk = RiskEngine()
+        me = MarketEngine(risk)
+        auth_store = AuthStore()
+
+        market, _ = me.create_market(
+            question="Will it ship?",
+            category="pr_merge",
+            category_id="repo#1@2026-03-01",
+            metadata={},
+            deadline="2026-03-01T00:00:00Z",
+        )
+
+        state_path = tmp_path / "futarchy_state.json"
+        save_snapshot(
+            risk,
+            me,
+            str(state_path),
+            auth_store=auth_store,
+            tracked_repos={},
+        )
+
+        original_state_path = api_module.STATE_PATH
+        api_module.STATE_PATH = str(state_path)
+        try:
+            async with api_module.lifespan(app):
+                assert app.state.me.markets[market.id].status == "void"
+
+            _, loaded_me, _, _ = load_snapshot(str(state_path))
+            assert loaded_me.markets[market.id].status == "void"
+            assert loaded_me.markets[market.id].resolved_at is not None
+        finally:
+            api_module.STATE_PATH = original_state_path
+
+    async def test_background_reconciler_voids_markets_after_deadline(
+        self, client, monkeypatch
+    ):
+        import core.api as api_module
+
+        monkeypatch.setattr(
+            api_module,
+            "MARKET_EXPIRY_CHECK_INTERVAL_SECONDS",
+            0.01,
+        )
+
+        deadline = (
+            datetime.now(timezone.utc) + timedelta(milliseconds=20)
+        ).isoformat().replace("+00:00", "Z")
+
+        resp = await client.post(
+            "/v1/admin/markets",
+            headers=ADMIN_HEADERS,
+            json={
+                "question": "Will it expire?",
+                "category": "pr_merge",
+                "category_id": "repo#2@2026-03-01",
+                "deadline": deadline,
+            },
+        )
+        mid = resp.json()["market_id"]
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            api_module._expired_market_reconciler(stop_event)
+        )
+        try:
+            await asyncio.sleep(0.1)
+        finally:
+            stop_event.set()
+            await task
+
+        detail = (await client.get(f"/v1/markets/{mid}")).json()
+        assert detail["status"] == "void"
+        assert detail["resolved_at"] is not None

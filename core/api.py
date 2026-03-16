@@ -62,6 +62,9 @@ LIQUIDITY_STEP = os.environ.get("LIQUIDITY_STEP", "40")
 LIQUIDITY_RAMP_STEPS = int(os.environ.get("LIQUIDITY_RAMP_STEPS", "4"))
 LIQUIDITY_RAMP_INTERVAL_MINUTES = int(os.environ.get("LIQUIDITY_RAMP_INTERVAL_MINUTES", "30"))
 LIQUIDITY_BUDGET = os.environ.get("LIQUIDITY_BUDGET", "200")
+MARKET_EXPIRY_CHECK_INTERVAL_SECONDS = float(
+    os.environ.get("MARKET_EXPIRY_CHECK_INTERVAL_SECONDS", "60")
+)
 
 
 @asynccontextmanager
@@ -81,7 +84,22 @@ async def lifespan(app: FastAPI):
     app.state.auth_store = auth_store or AuthStore()
     app.state.tracked_repos = tracked_repos
     app.state.lock = asyncio.Lock()
-    yield
+    await _reconcile_expired_markets_once()
+
+    app.state.expiry_stop_event = asyncio.Event()
+    app.state.expiry_task = None
+    if MARKET_EXPIRY_CHECK_INTERVAL_SECONDS > 0:
+        app.state.expiry_task = asyncio.create_task(
+            _expired_market_reconciler(app.state.expiry_stop_event)
+        )
+
+    try:
+        yield
+    finally:
+        app.state.expiry_stop_event.set()
+        expiry_task = getattr(app.state, "expiry_task", None)
+        if expiry_task is not None:
+            await expiry_task
 
 
 app = FastAPI(title="Futarchy API", version="0.2.0", lifespan=lifespan)
@@ -93,6 +111,71 @@ def _save():
     save_snapshot(app.state.risk, app.state.me, STATE_PATH,
                   auth_store=app.state.auth_store,
                   tracked_repos=app.state.tracked_repos)
+
+
+def _parse_deadline(deadline: str | None) -> datetime | None:
+    if not deadline:
+        return None
+
+    normalized = deadline
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        logger.warning("Skipping market with invalid deadline: %s", deadline)
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+async def _reconcile_expired_markets_once(
+    now: datetime | None = None,
+) -> list[int]:
+    current = now or datetime.now(timezone.utc)
+    expired_ids: list[int] = []
+
+    async with app.state.lock:
+        for market in list(app.state.me.markets.values()):
+            if market.status != "open":
+                continue
+
+            deadline = _parse_deadline(market.deadline)
+            if deadline is None or deadline > current:
+                continue
+
+            try:
+                app.state.me.void(market.id)
+                expired_ids.append(market.id)
+            except ValueError:
+                continue
+
+        if expired_ids:
+            _save()
+
+    if expired_ids:
+        logger.info("Voided %d expired markets: %s", len(expired_ids), expired_ids)
+
+    return expired_ids
+
+
+async def _expired_market_reconciler(stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            await _reconcile_expired_markets_once()
+        except Exception:
+            logger.exception("Expired market reconciliation failed")
+
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=MARKET_EXPIRY_CHECK_INTERVAL_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            continue
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
