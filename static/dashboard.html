@@ -12,9 +12,19 @@ a:hover { text-decoration: underline; }
 code, .mono { font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; }
 
 .container { max-width: 960px; margin: 0 auto; padding: 16px; }
-header { display: flex; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid #30363d; margin-bottom: 24px; }
+header { display: flex; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid #30363d; margin-bottom: 24px; flex-wrap: wrap; }
 header h1 { font-size: 20px; font-weight: 600; }
 header .subtitle { color: #8b949e; font-size: 14px; }
+header .spacer { flex: 1; }
+
+/* Auth bar in header */
+.auth-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.auth-bar .username { color: #3fb950; font-weight: 500; }
+.auth-bar .balance { color: #58a6ff; font-family: 'SF Mono', monospace; }
+.auth-bar button { padding: 4px 12px; border-radius: 6px; border: 1px solid #30363d; background: #21262d; color: #e6edf3; cursor: pointer; font-size: 13px; }
+.auth-bar button:hover { border-color: #58a6ff; }
+.auth-bar button.logout { color: #f85149; border-color: #f85149; background: transparent; }
+.auth-bar button.logout:hover { background: #3d1f1f33; }
 
 /* Filter tabs */
 .tabs { display: flex; gap: 4px; margin-bottom: 20px; }
@@ -101,6 +111,79 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 
 .loading { text-align: center; padding: 40px; color: #8b949e; }
 .error-msg { text-align: center; padding: 40px; color: #f85149; }
+
+/* --- Auth panel (register/login) --- */
+.auth-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; max-width: 400px; margin: 40px auto; }
+.auth-panel h2 { font-size: 18px; margin-bottom: 16px; }
+.auth-panel p { font-size: 13px; color: #8b949e; margin-bottom: 16px; }
+.auth-panel .form-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.auth-panel input[type="text"] { flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; font-size: 14px; outline: none; }
+.auth-panel input[type="text"]:focus { border-color: #58a6ff; }
+.auth-panel .btn-primary { padding: 8px 20px; border-radius: 6px; border: 1px solid #238636; background: #238636; color: #fff; cursor: pointer; font-size: 14px; font-weight: 500; }
+.auth-panel .btn-primary:hover { background: #2ea043; }
+.auth-panel .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.auth-panel .api-key-display { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-top: 12px; font-family: 'SF Mono', monospace; font-size: 12px; word-break: break-all; color: #f0883e; }
+.auth-panel .api-key-display .label { color: #8b949e; font-family: system-ui; font-size: 12px; display: block; margin-bottom: 4px; }
+.auth-panel .success-msg { color: #3fb950; font-size: 13px; margin-top: 8px; }
+.auth-panel .error { color: #f85149; font-size: 13px; margin-top: 8px; }
+
+/* --- Trading panel --- */
+.trade-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 24px; }
+.trade-panel .section-title { margin-bottom: 16px; }
+.trade-panel .trade-tabs { display: flex; gap: 0; margin-bottom: 16px; }
+.trade-panel .trade-tab { flex: 1; padding: 10px; text-align: center; cursor: pointer; font-weight: 600; font-size: 14px; border: 1px solid #30363d; transition: all 0.15s; }
+.trade-panel .trade-tab:first-child { border-radius: 6px 0 0 6px; }
+.trade-panel .trade-tab:last-child { border-radius: 0 6px 6px 0; }
+.trade-panel .trade-tab.buy-yes { color: #8b949e; }
+.trade-panel .trade-tab.buy-yes.active { background: #238636; border-color: #238636; color: #fff; }
+.trade-panel .trade-tab.buy-no { color: #8b949e; }
+.trade-panel .trade-tab.buy-no.active { background: #da3633; border-color: #da3633; color: #fff; }
+.trade-panel .trade-tab.sell-yes { color: #8b949e; }
+.trade-panel .trade-tab.sell-yes.active { background: #1a3a5c; border-color: #58a6ff; color: #58a6ff; }
+.trade-panel .trade-tab.sell-no { color: #8b949e; }
+.trade-panel .trade-tab.sell-no.active { background: #1a3a5c; border-color: #58a6ff; color: #58a6ff; }
+.trade-panel .trade-form { display: flex; flex-direction: column; gap: 12px; }
+.trade-panel .input-group { display: flex; flex-direction: column; gap: 4px; }
+.trade-panel .input-group label { font-size: 13px; color: #8b949e; }
+.trade-panel .input-row { display: flex; align-items: center; gap: 8px; }
+.trade-panel input[type="number"] { flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; font-size: 15px; font-family: 'SF Mono', monospace; outline: none; }
+.trade-panel input[type="number"]:focus { border-color: #58a6ff; }
+.trade-panel .input-suffix { color: #8b949e; font-size: 13px; min-width: 50px; }
+.trade-panel .estimate { font-size: 13px; color: #8b949e; padding: 8px 12px; background: #0d1117; border-radius: 6px; }
+.trade-panel .estimate .est-value { color: #e6edf3; font-family: 'SF Mono', monospace; }
+.trade-panel .btn-trade { width: 100%; padding: 12px; border-radius: 6px; border: none; font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+.trade-panel .btn-trade:disabled { opacity: 0.5; cursor: not-allowed; }
+.trade-panel .btn-trade.buy-yes-btn { background: #238636; color: #fff; }
+.trade-panel .btn-trade.buy-yes-btn:hover:not(:disabled) { background: #2ea043; }
+.trade-panel .btn-trade.buy-no-btn { background: #da3633; color: #fff; }
+.trade-panel .btn-trade.buy-no-btn:hover:not(:disabled) { background: #e04542; }
+.trade-panel .btn-trade.sell-btn { background: #1a3a5c; color: #58a6ff; border: 1px solid #58a6ff; }
+.trade-panel .btn-trade.sell-btn:hover:not(:disabled) { background: #1f4470; }
+.trade-panel .trade-feedback { margin-top: 8px; padding: 10px 12px; border-radius: 6px; font-size: 13px; }
+.trade-panel .trade-feedback.success { background: #1f6f2b33; border: 1px solid #238636; color: #3fb950; }
+.trade-panel .trade-feedback.error { background: #3d1f1f33; border: 1px solid #da3633; color: #f85149; }
+.trade-panel .login-prompt { color: #8b949e; font-size: 14px; text-align: center; padding: 12px; }
+.trade-panel .login-prompt a { cursor: pointer; }
+
+/* Your position in market detail */
+.your-position { background: #161b22; border: 1px solid #58a6ff; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; font-size: 14px; }
+.your-position .pos-title { color: #58a6ff; font-weight: 600; margin-bottom: 6px; }
+.your-position .pos-row { display: flex; gap: 24px; }
+.your-position .pos-item { display: flex; gap: 6px; }
+
+/* --- Portfolio view --- */
+.portfolio-section { margin-bottom: 24px; }
+.portfolio-summary { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 16px; display: flex; gap: 24px; flex-wrap: wrap; }
+.portfolio-summary .stat { display: flex; flex-direction: column; }
+.portfolio-summary .stat-label { font-size: 12px; color: #8b949e; }
+.portfolio-summary .stat-value { font-size: 24px; font-weight: 700; font-family: 'SF Mono', monospace; color: #e6edf3; }
+.portfolio-summary .stat-value.green { color: #3fb950; }
+
+.position-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }
+.position-card .pos-market { font-size: 14px; font-weight: 500; margin-bottom: 8px; }
+.position-card .pos-market a { color: #58a6ff; }
+.position-card .pos-details { display: flex; gap: 20px; font-size: 13px; }
+.position-card .pos-details .pos-outcome { font-weight: 500; }
 </style>
 </head>
 <body>
@@ -108,6 +191,8 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   <header>
     <h1>Futarchy</h1>
     <span class="subtitle">Prediction Markets</span>
+    <span class="spacer"></span>
+    <div id="auth-bar" class="auth-bar"></div>
   </header>
   <div id="app"><div class="loading">Loading...</div></div>
 </div>
@@ -115,23 +200,85 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 <script>
 (function() {
   const app = document.getElementById('app');
+  const authBar = document.getElementById('auth-bar');
   let pollTimer = null;
   let currentFilter = 'open';
 
-  function route() {
-    clearInterval(pollTimer);
-    const hash = location.hash || '#/';
-    const marketMatch = hash.match(/^#\/market\/(\d+)$/);
-    if (marketMatch) {
-      renderMarketDetail(parseInt(marketMatch[1]));
-    } else {
-      renderMarketList();
-    }
+  // --- Auth state ---
+  function getAuth() {
+    const key = localStorage.getItem('futarchy_api_key');
+    const username = localStorage.getItem('futarchy_username');
+    const accountId = localStorage.getItem('futarchy_account_id');
+    if (key && username) return { key, username, accountId };
+    return null;
   }
 
+  function setAuth(apiKey, username, accountId) {
+    localStorage.setItem('futarchy_api_key', apiKey);
+    localStorage.setItem('futarchy_username', username);
+    localStorage.setItem('futarchy_account_id', String(accountId));
+  }
+
+  function clearAuth() {
+    localStorage.removeItem('futarchy_api_key');
+    localStorage.removeItem('futarchy_username');
+    localStorage.removeItem('futarchy_account_id');
+  }
+
+  // --- Render auth bar ---
+  async function renderAuthBar() {
+    const auth = getAuth();
+    if (!auth) {
+      authBar.innerHTML = '<button id="login-btn">Sign Up / Log In</button>';
+      document.getElementById('login-btn').onclick = () => {
+        location.hash = '#/auth';
+      };
+      return;
+    }
+    // Fetch balance
+    let balanceText = '';
+    try {
+      const me = await apiAuth('/me');
+      balanceText = fmtVal(me.available) + ' credits';
+    } catch (e) {
+      if (e.message && e.message.includes('401')) {
+        clearAuth();
+        renderAuthBar();
+        return;
+      }
+      balanceText = '...';
+    }
+    authBar.innerHTML = `
+      <span class="username">${esc(auth.username)}</span>
+      <span class="balance">${balanceText}</span>
+      <button id="portfolio-btn">Portfolio</button>
+      <button id="logout-btn" class="logout">Logout</button>
+    `;
+    document.getElementById('portfolio-btn').onclick = () => { location.hash = '#/portfolio'; };
+    document.getElementById('logout-btn').onclick = () => {
+      clearAuth();
+      renderAuthBar();
+      route();
+    };
+  }
+
+  // --- API helpers ---
   async function api(path) {
     const resp = await fetch('/v1' + path);
-    if (!resp.ok) throw new Error(`API ${resp.status}`);
+    if (!resp.ok) throw new Error('API ' + resp.status);
+    return resp.json();
+  }
+
+  async function apiAuth(path, opts) {
+    const auth = getAuth();
+    if (!auth) throw new Error('Not authenticated');
+    const headers = { 'Authorization': 'Bearer ' + auth.key, 'Content-Type': 'application/json' };
+    const resp = await fetch('/v1' + path, Object.assign({ headers }, opts || {}));
+    if (!resp.ok) {
+      let errMsg = 'API ' + resp.status;
+      try { const data = await resp.json(); errMsg = data.detail || data.message || errMsg; } catch (_) {}
+      throw new Error(errMsg);
+    }
     return resp.json();
   }
 
@@ -156,10 +303,9 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     return 'badge badge-' + status;
   }
 
-  // --- LMSR helpers (lightweight, for labels only) ---
+  // --- LMSR helpers (lightweight, for labels + estimates) ---
 
   function lmsrPriceImpact(b, refAmount) {
-    // Price impact of buying refAmount of YES starting from 50/50
     var bf = parseFloat(b);
     var d = bf * Math.log(2 * Math.exp(refAmount / bf) - 1);
     var priceAfter = Math.exp(d / bf) / (Math.exp(d / bf) + 1);
@@ -167,11 +313,287 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   }
 
   function liquidityLabel(b) {
-    var impact = lmsrPriceImpact(b, 10); // 10-credit reference trade
+    var impact = lmsrPriceImpact(b, 10);
     if (impact < 0.005) return { label: 'Deep', color: '#3fb950' };
     if (impact < 0.02)  return { label: 'Moderate', color: '#f0883e' };
     if (impact < 0.10)  return { label: 'Thin', color: '#f85149' };
     return { label: 'Very Thin', color: '#da3633' };
+  }
+
+  // Estimate shares for a buy using LMSR cost function
+  // C(q) = b * ln(sum(e^(qi/b)))
+  // Buying `budget` credits of `outcome` in market with q, b
+  function estimateBuyShares(q, b, outcome, budget) {
+    var bf = parseFloat(b);
+    var budgetF = parseFloat(budget);
+    if (budgetF <= 0 || bf <= 0) return { shares: 0, avgPrice: 0, newPrice: 0 };
+
+    // Current cost
+    var outcomes = Object.keys(q);
+    function costFn(qq) {
+      var sum = 0;
+      for (var i = 0; i < outcomes.length; i++) sum += Math.exp(parseFloat(qq[outcomes[i]]) / bf);
+      return bf * Math.log(sum);
+    }
+    function priceFn(qq, o) {
+      var sum = 0;
+      for (var i = 0; i < outcomes.length; i++) sum += Math.exp(parseFloat(qq[outcomes[i]]) / bf);
+      return Math.exp(parseFloat(qq[o]) / bf) / sum;
+    }
+
+    // Binary search for shares that cost exactly budget
+    var lo = 0, hi = budgetF * 10; // upper bound generous
+    for (var iter = 0; iter < 100; iter++) {
+      var mid = (lo + hi) / 2;
+      var newQ = {};
+      for (var i = 0; i < outcomes.length; i++) {
+        newQ[outcomes[i]] = parseFloat(q[outcomes[i]]) + (outcomes[i] === outcome ? mid : 0);
+      }
+      var tradeCost = costFn(newQ) - costFn(q);
+      if (tradeCost < budgetF) lo = mid;
+      else hi = mid;
+    }
+    var shares = (lo + hi) / 2;
+    var newQFinal = {};
+    for (var i = 0; i < outcomes.length; i++) {
+      newQFinal[outcomes[i]] = parseFloat(q[outcomes[i]]) + (outcomes[i] === outcome ? shares : 0);
+    }
+    var avgPrice = shares > 0 ? budgetF / shares : 0;
+    var newPrice = priceFn(newQFinal, outcome);
+    return { shares: shares, avgPrice: avgPrice, newPrice: newPrice };
+  }
+
+  // Estimate credit proceeds from selling `amount` shares of `outcome`
+  function estimateSellProceeds(q, b, outcome, amount) {
+    var bf = parseFloat(b);
+    var amountF = parseFloat(amount);
+    if (amountF <= 0 || bf <= 0) return { proceeds: 0, avgPrice: 0, newPrice: 0 };
+
+    var outcomes = Object.keys(q);
+    function costFn(qq) {
+      var sum = 0;
+      for (var i = 0; i < outcomes.length; i++) sum += Math.exp(parseFloat(qq[outcomes[i]]) / bf);
+      return bf * Math.log(sum);
+    }
+    function priceFn(qq, o) {
+      var sum = 0;
+      for (var i = 0; i < outcomes.length; i++) sum += Math.exp(parseFloat(qq[outcomes[i]]) / bf);
+      return Math.exp(parseFloat(qq[o]) / bf) / sum;
+    }
+
+    var newQ = {};
+    for (var i = 0; i < outcomes.length; i++) {
+      newQ[outcomes[i]] = parseFloat(q[outcomes[i]]) - (outcomes[i] === outcome ? amountF : 0);
+    }
+    var proceeds = costFn(q) - costFn(newQ);
+    var avgPrice = amountF > 0 ? proceeds / amountF : 0;
+    var newPrice = priceFn(newQ, outcome);
+    return { proceeds: Math.max(0, proceeds), avgPrice: avgPrice, newPrice: newPrice };
+  }
+
+  // --- Router ---
+
+  function route() {
+    clearInterval(pollTimer);
+    const hash = location.hash || '#/';
+    const marketMatch = hash.match(/^#\/market\/(\d+)$/);
+    if (hash === '#/auth') {
+      renderAuthPanel();
+    } else if (hash === '#/portfolio') {
+      renderPortfolio();
+    } else if (marketMatch) {
+      renderMarketDetail(parseInt(marketMatch[1]));
+    } else {
+      renderMarketList();
+    }
+  }
+
+  // --- Auth Panel ---
+
+  function renderAuthPanel() {
+    const auth = getAuth();
+    if (auth) {
+      location.hash = '#/portfolio';
+      return;
+    }
+    app.innerHTML = `
+      <a class="back-link" href="#/">\u2190 Markets</a>
+      <div class="auth-panel">
+        <h2>Create Account</h2>
+        <p>Pick a username to get started. You will receive 100 credits to trade with. No email or password required.</p>
+        <div class="form-row">
+          <input type="text" id="reg-username" placeholder="Username" maxlength="40" autocomplete="off">
+          <button class="btn-primary" id="reg-btn">Register</button>
+        </div>
+        <div id="reg-feedback"></div>
+      </div>
+    `;
+    const input = document.getElementById('reg-username');
+    const btn = document.getElementById('reg-btn');
+    const feedback = document.getElementById('reg-feedback');
+
+    async function doRegister() {
+      const username = input.value.trim();
+      if (!username) { feedback.innerHTML = '<div class="error">Enter a username.</div>'; return; }
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+      try {
+        const resp = await fetch('/v1/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          feedback.innerHTML = '<div class="error">' + esc(data.detail || data.message || 'Registration failed') + '</div>';
+          btn.disabled = false;
+          btn.textContent = 'Register';
+          return;
+        }
+        setAuth(data.api_key, username, data.account_id);
+        feedback.innerHTML = `
+          <div class="success-msg">Account created! You have 100 credits.</div>
+          <div class="api-key-display">
+            <span class="label">Your API key (save it!):</span>
+            ${esc(data.api_key)}
+          </div>
+        `;
+        btn.style.display = 'none';
+        input.style.display = 'none';
+        renderAuthBar();
+        setTimeout(() => { location.hash = '#/'; }, 2000);
+      } catch (e) {
+        feedback.innerHTML = '<div class="error">Network error. Try again.</div>';
+        btn.disabled = false;
+        btn.textContent = 'Register';
+      }
+    }
+
+    btn.onclick = doRegister;
+    input.onkeydown = (e) => { if (e.key === 'Enter') doRegister(); };
+    input.focus();
+  }
+
+  // --- Portfolio View ---
+
+  async function renderPortfolio() {
+    const auth = getAuth();
+    if (!auth) {
+      location.hash = '#/auth';
+      return;
+    }
+    app.innerHTML = `
+      <a class="back-link" href="#/">\u2190 Markets</a>
+      <div class="portfolio-section">
+        <div class="section-title" style="font-size:22px;border:none;padding:0">Portfolio</div>
+        <div id="portfolio-area"><div class="loading">Loading portfolio...</div></div>
+      </div>
+    `;
+    await fetchAndRenderPortfolio();
+  }
+
+  async function fetchAndRenderPortfolio() {
+    const auth = getAuth();
+    if (!auth) return;
+    const area = document.getElementById('portfolio-area');
+    if (!area) return;
+
+    try {
+      const [me, allMarkets] = await Promise.all([
+        apiAuth('/me'),
+        api('/markets'),
+      ]);
+
+      // Find positions for this account across all markets
+      const accountId = parseInt(auth.accountId);
+      const positionPromises = allMarkets.map(m =>
+        api('/markets/' + m.market_id + '/positions').then(positions => {
+          const myPos = positions.find(p => p.account_id === accountId);
+          if (myPos) {
+            const hasNonZero = Object.values(myPos.positions).some(v => parseFloat(v) !== 0);
+            if (hasNonZero) return { market: m, positions: myPos.positions };
+          }
+          return null;
+        }).catch(() => null)
+      );
+      const allPositions = (await Promise.all(positionPromises)).filter(Boolean);
+
+      // Compute total position value (shares * current price)
+      let totalPositionValue = 0;
+      allPositions.forEach(p => {
+        Object.entries(p.positions).forEach(([outcome, shares]) => {
+          const s = parseFloat(shares);
+          const price = p.market.prices[outcome] ? parseFloat(p.market.prices[outcome]) : 0;
+          totalPositionValue += s * price;
+        });
+      });
+
+      area.innerHTML = `
+        <div class="portfolio-summary">
+          <div class="stat">
+            <span class="stat-label">Available Balance</span>
+            <span class="stat-value green">${fmtVal(me.available)}</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Frozen</span>
+            <span class="stat-value">${fmtVal(me.frozen)}</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Total Credits</span>
+            <span class="stat-value">${fmtVal(me.total)}</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Position Value (est.)</span>
+            <span class="stat-value">${fmtVal(totalPositionValue)}</span>
+          </div>
+        </div>
+
+        <div class="section-title">Positions (${allPositions.length})</div>
+        ${allPositions.length === 0 ? '<div class="empty">No positions yet. Start trading!</div>' :
+          allPositions.map(p => {
+            const isOpen = p.market.status === 'open';
+            return `<div class="position-card">
+              <div class="pos-market">
+                <a href="#/market/${p.market.market_id}">${esc(p.market.question)}</a>
+                <span class="${badgeClass(p.market.status)}" style="margin-left:8px">${p.market.status}</span>
+              </div>
+              <div class="pos-details">
+                ${Object.entries(p.positions).map(([outcome, shares]) => {
+                  const s = parseFloat(shares);
+                  if (s === 0) return '';
+                  const color = outcome === 'yes' ? '#3fb950' : '#f85149';
+                  const price = p.market.prices[outcome] ? parseFloat(p.market.prices[outcome]) : 0;
+                  const value = s * price;
+                  return `<span class="pos-outcome" style="color:${color}">${outcome.toUpperCase()}: <span class="mono">${fmtVal(shares)} shares</span></span>
+                    ${isOpen ? `<span style="color:#8b949e">@ ${fmtPrice(p.market.prices[outcome])} = <span class="mono">${fmtVal(value)}</span> credits</span>` : ''}`;
+                }).join('')}
+              </div>
+            </div>`;
+          }).join('')
+        }
+
+        ${me.locks && me.locks.length > 0 ? `
+          <div class="section-title" style="margin-top:24px">Active Locks (${me.locks.length})</div>
+          <table>
+            <tr><th>Lock ID</th><th>Market</th><th>Amount</th><th>Type</th></tr>
+            ${me.locks.map(lk => `<tr>
+              <td class="mono">${lk.lock_id}</td>
+              <td><a href="#/market/${lk.market_id}">#${lk.market_id}</a></td>
+              <td class="mono">${fmtVal(lk.amount)}</td>
+              <td>${lk.lock_type}</td>
+            </tr>`).join('')}
+          </table>
+        ` : ''}
+      `;
+    } catch (e) {
+      if (e.message && e.message.includes('401')) {
+        clearAuth();
+        renderAuthBar();
+        location.hash = '#/auth';
+        return;
+      }
+      area.innerHTML = '<div class="error-msg">Failed to load portfolio. ' + esc(e.message) + '</div>';
+    }
   }
 
   // --- Market List ---
@@ -280,6 +702,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 
       const prUrl = m.metadata && m.metadata.pr_url;
       const conditional = isConditional(m);
+      const auth = getAuth();
 
       let resolution = '';
       if (m.status === 'resolved') {
@@ -298,10 +721,77 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         </div>`;
       }
 
-      // Depth table for open markets (fetched from API)
+      // Your position (if logged in)
+      let yourPosition = '';
+      if (auth) {
+        const accountId = parseInt(auth.accountId);
+        const myPos = positions.find(p => p.account_id === accountId);
+        if (myPos) {
+          const hasNonZero = Object.values(myPos.positions).some(v => parseFloat(v) !== 0);
+          if (hasNonZero) {
+            yourPosition = `<div class="your-position">
+              <div class="pos-title">Your Position</div>
+              <div class="pos-row">
+                ${Object.entries(myPos.positions).map(([outcome, shares]) => {
+                  const s = parseFloat(shares);
+                  if (s === 0) return '';
+                  const color = outcome === 'yes' ? '#3fb950' : '#f85149';
+                  const price = m.prices[outcome] ? parseFloat(m.prices[outcome]) : 0;
+                  const value = s * price;
+                  return `<div class="pos-item">
+                    <span style="color:${color};font-weight:600">${outcome.toUpperCase()}</span>
+                    <span class="mono">${fmtVal(shares)} shares</span>
+                    ${m.status === 'open' ? `<span style="color:#8b949e">(\u2248${fmtVal(value)} credits)</span>` : ''}
+                  </div>`;
+                }).join('')}
+              </div>
+            </div>`;
+          }
+        }
+      }
+
+      // Trading panel for open markets
+      let tradePanel = '';
+      if (m.status === 'open') {
+        if (!auth) {
+          tradePanel = `<div class="trade-panel">
+            <div class="section-title">Trade</div>
+            <div class="login-prompt"><a href="#/auth">Sign up</a> to start trading on this market.</div>
+          </div>`;
+        } else {
+          // Find user's positions for sell limits
+          const accountId = parseInt(auth.accountId);
+          const myPos = positions.find(p => p.account_id === accountId);
+          const yesShares = myPos ? parseFloat(myPos.positions.yes || '0') : 0;
+          const noShares = myPos ? parseFloat(myPos.positions.no || '0') : 0;
+
+          tradePanel = `<div class="trade-panel">
+            <div class="section-title">Trade</div>
+            <div class="trade-tabs">
+              <div class="trade-tab buy-yes active" data-action="buy-yes">Buy YES</div>
+              <div class="trade-tab buy-no" data-action="buy-no">Buy NO</div>
+              <div class="trade-tab sell-yes" data-action="sell-yes">Sell YES</div>
+              <div class="trade-tab sell-no" data-action="sell-no">Sell NO</div>
+            </div>
+            <div class="trade-form" id="trade-form">
+              <div class="input-group">
+                <label id="trade-input-label">Budget (credits to spend)</label>
+                <div class="input-row">
+                  <input type="number" id="trade-amount" min="0.01" step="0.01" placeholder="10" value="">
+                  <span class="input-suffix" id="trade-suffix">credits</span>
+                </div>
+              </div>
+              <div class="estimate" id="trade-estimate">Enter an amount to see estimate</div>
+              <button class="btn-trade buy-yes-btn" id="trade-btn" disabled>Buy YES</button>
+              <div id="trade-feedback"></div>
+            </div>
+          </div>`;
+        }
+      }
+
+      // Depth table for open markets
       let depthSection = '';
       if (m.status === 'open' && depthData && depthData.rows && depthData.rows.length > 0) {
-        // Group by outcome
         const byOutcome = {};
         depthData.rows.forEach(r => {
           if (!byOutcome[r.outcome]) byOutcome[r.outcome] = [];
@@ -326,7 +816,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         </div>`;
       }
 
-      // LMSR reference (collapsible)
+      // LMSR reference
       const lmsrRef = `<details class="lmsr-ref">
         <summary>LMSR Reference \u2014 how this market works</summary>
         <div class="ref-content">
@@ -379,6 +869,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 
         ${resolution}
         ${rulesBox}
+        ${yourPosition}
 
         ${m.status === 'open' ? `<div class="price-display">
           <div class="price-box yes">
@@ -392,6 +883,8 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
             <div class="price-label">${fmtPrice(m.prices.no)}</div>
           </div>
         </div>` : ''}
+
+        ${tradePanel}
 
         ${depthSection}
 
@@ -415,7 +908,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
           ${positions.length === 0 ? '<div class="empty">No positions.</div>' : `<table>
             <tr><th>Account</th><th>Yes</th><th>No</th></tr>
             ${positions.map(p => `<tr>
-              <td class="mono">${p.account_id}</td>
+              <td class="mono">${p.account_id}${auth && p.account_id === parseInt(auth.accountId) ? ' (you)' : ''}</td>
               <td class="mono" style="color:#3fb950">${fmtVal(p.positions.yes || '0')}</td>
               <td class="mono" style="color:#f85149">${fmtVal(p.positions.no || '0')}</td>
             </tr>`).join('')}
@@ -424,9 +917,166 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 
         ${lmsrRef}
       `;
+
+      // Bind trading panel if present
+      if (m.status === 'open' && auth) {
+        bindTradePanel(m, positions);
+      }
+
     } catch (e) {
       app.innerHTML = `<a class="back-link" href="#/">\u2190 All Markets</a><div class="error-msg">Market not found or failed to load.</div>`;
     }
+  }
+
+  // --- Trade Panel Logic ---
+
+  function bindTradePanel(market, positions) {
+    const tabs = document.querySelectorAll('.trade-tab');
+    const amountInput = document.getElementById('trade-amount');
+    const inputLabel = document.getElementById('trade-input-label');
+    const inputSuffix = document.getElementById('trade-suffix');
+    const estimateDiv = document.getElementById('trade-estimate');
+    const tradeBtn = document.getElementById('trade-btn');
+    const feedback = document.getElementById('trade-feedback');
+
+    if (!amountInput || !tradeBtn) return;
+
+    let currentAction = 'buy-yes'; // buy-yes, buy-no, sell-yes, sell-no
+
+    const auth = getAuth();
+    const accountId = parseInt(auth.accountId);
+    const myPos = positions.find(p => p.account_id === accountId);
+    const yesShares = myPos ? parseFloat(myPos.positions.yes || '0') : 0;
+    const noShares = myPos ? parseFloat(myPos.positions.no || '0') : 0;
+
+    function updateUI() {
+      const isBuy = currentAction.startsWith('buy');
+      const outcome = currentAction.endsWith('yes') ? 'yes' : 'no';
+
+      // Update tabs
+      tabs.forEach(t => t.classList.toggle('active', t.dataset.action === currentAction));
+
+      // Update labels
+      if (isBuy) {
+        inputLabel.textContent = 'Budget (credits to spend)';
+        inputSuffix.textContent = 'credits';
+      } else {
+        inputLabel.textContent = 'Shares to sell';
+        inputSuffix.textContent = 'shares';
+      }
+
+      // Update button
+      if (isBuy) {
+        tradeBtn.textContent = 'Buy ' + outcome.toUpperCase();
+        tradeBtn.className = 'btn-trade ' + (outcome === 'yes' ? 'buy-yes-btn' : 'buy-no-btn');
+      } else {
+        tradeBtn.textContent = 'Sell ' + outcome.toUpperCase();
+        tradeBtn.className = 'btn-trade sell-btn';
+      }
+
+      updateEstimate();
+    }
+
+    function updateEstimate() {
+      const val = parseFloat(amountInput.value);
+      const isBuy = currentAction.startsWith('buy');
+      const outcome = currentAction.endsWith('yes') ? 'yes' : 'no';
+
+      if (!val || val <= 0) {
+        estimateDiv.innerHTML = 'Enter an amount to see estimate';
+        tradeBtn.disabled = true;
+        return;
+      }
+
+      if (isBuy) {
+        const est = estimateBuyShares(market.q, market.b, outcome, val);
+        estimateDiv.innerHTML = `
+          Est. shares: <span class="est-value">${est.shares.toFixed(2)}</span> |
+          Avg price: <span class="est-value">${(est.avgPrice * 100).toFixed(1)}\u00a2</span> |
+          New price: <span class="est-value">${(est.newPrice * 100).toFixed(1)}%</span>
+        `;
+        tradeBtn.disabled = false;
+      } else {
+        const maxShares = outcome === 'yes' ? yesShares : noShares;
+        if (val > maxShares) {
+          estimateDiv.innerHTML = `<span style="color:#f85149">You only have ${fmtVal(maxShares)} ${outcome.toUpperCase()} shares</span>`;
+          tradeBtn.disabled = true;
+          return;
+        }
+        const est = estimateSellProceeds(market.q, market.b, outcome, val);
+        estimateDiv.innerHTML = `
+          Est. proceeds: <span class="est-value">${est.proceeds.toFixed(2)} credits</span> |
+          Avg price: <span class="est-value">${(est.avgPrice * 100).toFixed(1)}\u00a2</span> |
+          New price: <span class="est-value">${(est.newPrice * 100).toFixed(1)}%</span>
+        `;
+        tradeBtn.disabled = false;
+      }
+    }
+
+    // Tab clicks
+    tabs.forEach(t => {
+      t.onclick = () => {
+        currentAction = t.dataset.action;
+        amountInput.value = '';
+        feedback.innerHTML = '';
+        updateUI();
+        amountInput.focus();
+      };
+    });
+
+    // Amount input
+    amountInput.oninput = updateEstimate;
+
+    // Trade button
+    tradeBtn.onclick = async () => {
+      const val = amountInput.value;
+      if (!val || parseFloat(val) <= 0) return;
+
+      const isBuy = currentAction.startsWith('buy');
+      const outcome = currentAction.endsWith('yes') ? 'yes' : 'no';
+
+      tradeBtn.disabled = true;
+      tradeBtn.textContent = 'Submitting...';
+      feedback.innerHTML = '';
+
+      try {
+        let result;
+        if (isBuy) {
+          result = await apiAuth('/markets/' + market.market_id + '/buy', {
+            method: 'POST',
+            body: JSON.stringify({ outcome: outcome, budget: val }),
+          });
+        } else {
+          result = await apiAuth('/markets/' + market.market_id + '/sell', {
+            method: 'POST',
+            body: JSON.stringify({ outcome: outcome, amount: val }),
+          });
+        }
+
+        const verb = isBuy ? 'Bought' : 'Sold';
+        feedback.innerHTML = `<div class="trade-feedback success">
+          ${verb} <strong>${fmtVal(result.amount)}</strong> ${outcome.toUpperCase()} shares
+          at <strong>${fmtPrice(result.price)}</strong>
+          (value: ${fmtVal(result.value)} credits)
+        </div>`;
+
+        amountInput.value = '';
+
+        // Refresh the page data and auth bar after trade
+        renderAuthBar();
+        clearInterval(pollTimer);
+        setTimeout(() => {
+          fetchAndRenderDetail(market.market_id);
+          pollTimer = setInterval(() => fetchAndRenderDetail(market.market_id), 15000);
+        }, 500);
+
+      } catch (e) {
+        feedback.innerHTML = `<div class="trade-feedback error">${esc(e.message)}</div>`;
+        updateUI();
+      }
+    };
+
+    updateUI();
   }
 
   function esc(s) {
@@ -436,6 +1086,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   }
 
   window.addEventListener('hashchange', route);
+  renderAuthBar();
   route();
 })();
 </script>
