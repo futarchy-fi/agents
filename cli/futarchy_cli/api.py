@@ -69,6 +69,13 @@ class Client:
     def me(self) -> dict:
         return self.get("/v1/me")
 
+    def activity(self, limit: int = 20,
+                 before_tx_id: int | None = None) -> dict:
+        params = {"limit": limit}
+        if before_tx_id is not None:
+            params["before_tx_id"] = before_tx_id
+        return self.get("/v1/me/activity", **params)
+
     # ── Trading endpoints ──
 
     def buy(self, market_id: int, outcome: str, budget: float) -> dict:

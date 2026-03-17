@@ -380,7 +380,10 @@ class TestAccountActivity:
 
         resp = await client.get("/v1/me/activity", headers=headers)
         assert resp.status_code == 200
-        activity = resp.json()
+        payload = resp.json()
+        activity = payload["entries"]
+        assert payload["has_more"] is False
+        assert payload["next_before_tx_id"] is None
         assert len(activity) >= 5
 
         assert activity[0]["market_id"] == loss_mid
@@ -405,6 +408,43 @@ class TestAccountActivity:
         assert Decimal(buy_entry["available_delta"]) < 0
         assert Decimal(buy_entry["frozen_delta"]) > 0
         assert Decimal(buy_entry["total_delta"]) == Decimal("0")
+
+    async def test_activity_paginates_with_before_tx_id_cursor(self, client):
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                 json={"question": "Paginate?", "category": "t",
+                                       "category_id": "t#page"})
+        assert resp.status_code == 200
+        mid = resp.json()["market_id"]
+
+        key = await _mock_auth(client, github_id=55, login="pager")
+        headers = _user_headers(key)
+
+        for _ in range(3):
+            resp = await client.post(f"/v1/markets/{mid}/buy", headers=headers,
+                                     json={"outcome": "yes", "budget": "10"})
+            assert resp.status_code == 200
+
+        resp = await client.get("/v1/me/activity", headers=headers,
+                                params={"limit": 2})
+        assert resp.status_code == 200
+        first_page = resp.json()
+
+        assert len(first_page["entries"]) == 2
+        assert first_page["has_more"] is True
+        assert first_page["next_before_tx_id"] == first_page["entries"][-1]["tx_id"]
+        assert first_page["entries"][0]["tx_id"] > first_page["entries"][1]["tx_id"]
+
+        resp = await client.get("/v1/me/activity", headers=headers,
+                                params={"limit": 2,
+                                        "before_tx_id": first_page["next_before_tx_id"]})
+        assert resp.status_code == 200
+        second_page = resp.json()
+
+        assert len(second_page["entries"]) == 2
+        assert second_page["entries"][0]["tx_id"] < first_page["entries"][-1]["tx_id"]
+        assert second_page["entries"][0]["tx_id"] > second_page["entries"][1]["tx_id"]
+        assert second_page["has_more"] is False
+        assert second_page["next_before_tx_id"] is None
 
 # ---------------------------------------------------------------------------
 # Public Market Data

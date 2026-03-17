@@ -32,6 +32,10 @@ def _bar(yes: float, width: int = 20) -> str:
     return f"{GREEN}{'█' * filled}{DIM}{'░' * empty}{RESET}"
 
 
+def _signed(value: float) -> str:
+    return f"{value:+,.2f}"
+
+
 def markets_table(markets: list[dict]) -> str:
     if not markets:
         return f"\n  {DIM}No open markets.{RESET}\n"
@@ -168,6 +172,56 @@ def user_info(data: dict) -> str:
         lines.append(f"\n  {DIM}No open positions.{RESET}")
 
     lines.append("")
+    lines.append(f"  {DIM}Run futarchy activity for account history.{RESET}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def activity_page(data: dict) -> str:
+    entries = data.get("entries", [])
+    if not entries:
+        return f"\n  {DIM}No account activity yet.{RESET}\n"
+
+    lines = [
+        "",
+        f"  {BOLD}Activity{RESET}",
+        f"  {DIM}{'─' * 56}{RESET}",
+    ]
+
+    for entry in entries:
+        ts = entry.get("created_at", "-")
+        if isinstance(ts, str) and "T" in ts:
+            ts = ts.split("T")[0] + " " + ts.split("T")[1][:5]
+
+        summary = entry.get("summary", entry.get("reason", "activity"))
+        market = entry.get("market_question")
+        if not market and entry.get("market_id"):
+            market = f"Market #{entry['market_id']}"
+
+        avail_delta = float(entry.get("available_delta", 0))
+        frozen_delta = float(entry.get("frozen_delta", 0))
+        total_after = float(entry.get("total_after", 0))
+        available_after = float(entry.get("available_after", 0))
+        frozen_after = float(entry.get("frozen_after", 0))
+
+        lines.append(f"  {BOLD}{summary}{RESET}  {DIM}{ts}{RESET}")
+        if market:
+            lines.append(f"  {DIM}{market}{RESET}")
+        lines.append(
+            f"  Avail {_signed(avail_delta)}  Frozen {_signed(frozen_delta)}"
+        )
+        lines.append(
+            f"  Total {total_after:,.2f}  {DIM}(avail {available_after:,.2f}, frozen {frozen_after:,.2f}){RESET}"
+        )
+        lines.append("")
+
+    if data.get("has_more"):
+        cursor = data.get("next_before_tx_id")
+        lines.append(
+            f"  {DIM}Older entries available: futarchy activity --before-tx-id {cursor}{RESET}"
+        )
+        lines.append("")
+
     return "\n".join(lines)
 
 

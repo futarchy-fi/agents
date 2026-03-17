@@ -61,6 +61,11 @@ class AccountActivityEntry(BaseModel):
     trade_id: int | None = None
     lock_id: int | None = None
 
+class AccountActivityPage(BaseModel):
+    entries: list[AccountActivityEntry]
+    has_more: bool
+    next_before_tx_id: int | None = None
+
 
 # --- Markets ---
 
