@@ -3,6 +3,9 @@ set -euo pipefail
 
 API_URL="${API_URL:-http://localhost:8000}"
 ROLLOVER_FUNDING="${LIQUIDITY_BUDGET:-200}"
+ROLLOVER_INITIAL="${LIQUIDITY_INITIAL:-40}"
+ROLLOVER_STEP="${LIQUIDITY_STEP:-40}"
+ROLLOVER_STEPS="${LIQUIDITY_RAMP_STEPS:-4}"
 RAMP_INTERVAL_MINUTES="${LIQUIDITY_RAMP_INTERVAL_MINUTES:-30}"
 ROLLOVER_DAY_CAP="${ROLLOVER_DAY_CAP:-100}"
 RESOLUTION_LOOKBACK_HOURS="${RESOLUTION_LOOKBACK_HOURS:-48}"
@@ -222,6 +225,9 @@ create_rollover_markets() {
     local tracked_repos="$1"
     local treasury_id="$2"
     local open_markets="$3"
+    local default_next_liquidity
+
+    default_next_liquidity="$(date -u -d "+${RAMP_INTERVAL_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)"
 
     if [ -z "${treasury_id}" ]; then
         log "FUTARCHY_TREASURY_ID is not set and could not be inferred; skipping new market creation"
@@ -246,10 +252,14 @@ create_rollover_markets() {
         while IFS= read -r pr; do
             [ -z "${pr}" ] && continue
 
-            local pr_num pr_title category_id existing_count body question
+            local pr_num pr_title category_id prefix category_prefix existing_count body question
+            local previous_market previous_market_id previous_detail
+            local funding liquidity_budget step_amount steps_remaining next_liquidity_at
             pr_num="$(jq -r '.number' <<< "${pr}")"
             pr_title="$(jq -r '.title' <<< "${pr}")"
             category_id="${repo}#${pr_num}@${TODAY}"
+            prefix="${repo}#${pr_num}@"
+            category_prefix="${repo}#${pr_num}"
 
             existing_count="$(jq --arg category_id "${category_id}" '
                 map(select(.category_id == $category_id)) | length
@@ -258,6 +268,38 @@ create_rollover_markets() {
             if [ "${existing_count}" -gt 0 ]; then
                 log "Market already exists for ${category_id}"
                 continue
+            fi
+
+            previous_market="$(
+                api_get "/markets?category=pr_merge&category_id=$(urlencode "${category_prefix}")" | \
+                jq -c --arg prefix "${prefix}" --arg today "${TODAY}" '
+                    map(select(
+                        (.category_id | startswith($prefix)) and
+                        (.category_id | endswith("@" + $today) | not)
+                    ))
+                    | sort_by(.created_at)
+                    | last // empty
+                '
+            )"
+
+            if [ -n "${previous_market}" ]; then
+                previous_market_id="$(jq -r '.market_id' <<< "${previous_market}")"
+                previous_detail="$(api_get "/markets/${previous_market_id}")"
+                funding="$(jq -r '.liquidity' <<< "${previous_market}")"
+                liquidity_budget="$(jq -r --arg fallback "${ROLLOVER_FUNDING}" \
+                    '.metadata.liquidity_budget // $fallback' <<< "${previous_detail}")"
+                step_amount="$(jq -r --arg fallback "${ROLLOVER_STEP}" \
+                    '.metadata.liquidity_step // $fallback' <<< "${previous_detail}")"
+                steps_remaining="$(jq -r '.metadata.liquidity_steps_remaining // 0' <<< "${previous_detail}")"
+                next_liquidity_at="$(jq -r '.metadata.next_liquidity_at // empty' <<< "${previous_detail}")"
+                log "Carrying forward ${funding} liquidity from market ${previous_market_id} for ${category_id}"
+            else
+                funding="${ROLLOVER_INITIAL}"
+                liquidity_budget="${ROLLOVER_FUNDING}"
+                step_amount="${ROLLOVER_STEP}"
+                steps_remaining="${ROLLOVER_STEPS}"
+                next_liquidity_at="${default_next_liquidity}"
+                log "No prior market for ${category_id}; creating with initial liquidity ${funding}"
             fi
 
             if day_cap_reached "${repo}" "${pr_num}"; then
@@ -270,10 +312,14 @@ create_rollover_markets() {
                 --arg question "${question}" \
                 --arg category_id "${category_id}" \
                 --arg deadline "${DEADLINE}" \
-                --arg funding "${ROLLOVER_FUNDING}" \
+                --arg funding "${funding}" \
                 --argjson funding_account_id "${treasury_id}" \
                 --argjson pr_number "${pr_num}" \
                 --arg repo "${repo}" \
+                --arg liquidity_budget "${liquidity_budget}" \
+                --arg liquidity_step "${step_amount}" \
+                --argjson liquidity_steps_remaining "${steps_remaining}" \
+                --arg next_liquidity_at "${next_liquidity_at}" \
                 '{
                     question: $question,
                     category: "pr_merge",
@@ -287,8 +333,15 @@ create_rollover_markets() {
                         repo: $repo,
                         funding_account_id: $funding_account_id,
                         resolution_rules: "YES if merged before deadline, NO if closed without merge before deadline, VOID otherwise",
-                        liquidity_steps_remaining: 0,
-                        next_liquidity_at: null
+                        liquidity_budget: $liquidity_budget,
+                        liquidity_step: $liquidity_step,
+                        liquidity_steps_remaining: $liquidity_steps_remaining,
+                        next_liquidity_at: (
+                            if $liquidity_steps_remaining > 0 and ($next_liquidity_at | length) > 0
+                            then $next_liquidity_at
+                            else null
+                            end
+                        )
                     }
                 }')"
 
