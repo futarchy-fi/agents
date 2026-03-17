@@ -1,0 +1,10 @@
+[Unit]
+Description=Futarchy market rollover
+After=futarchy.service
+Requires=futarchy.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+EnvironmentFile=/etc/futarchy.env
+ExecStart=/opt/futarchy/agents/deploy/rollover.sh
