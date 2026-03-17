@@ -121,6 +121,15 @@ class TradeResult(BaseModel):
 class CreateAccountResponse(BaseModel):
     account_id: int
 
+class CreateServiceAccountRequest(BaseModel):
+    username: str
+    initial_credits: str | None = None
+
+class CreateServiceAccountResponse(BaseModel):
+    account_id: int
+    username: str
+    api_key: str
+
 class MintRequest(BaseModel):
     account_id: int
     amount: str
