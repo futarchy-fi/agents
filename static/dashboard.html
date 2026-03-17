@@ -203,7 +203,8 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 (function() {
   const app = document.getElementById('app');
   const authBar = document.getElementById('auth-bar');
-  const githubLoginUrl = '/v1/auth/github/login';
+  const githubLoginBaseUrl = '/v1/auth/github/login';
+  const accountPickerKey = 'futarchy_force_account_picker';
   let pollTimer = null;
   let currentFilter = 'open';
   let currentRepoFilter = sessionStorage.getItem('futarchy_repo_filter') || 'all';
@@ -222,6 +223,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     localStorage.setItem('futarchy_github_login', githubLogin);
     localStorage.removeItem('futarchy_username');
     localStorage.setItem('futarchy_account_id', String(accountId));
+    sessionStorage.removeItem(accountPickerKey);
   }
 
   function clearAuth() {
@@ -229,6 +231,14 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     localStorage.removeItem('futarchy_github_login');
     localStorage.removeItem('futarchy_username');
     localStorage.removeItem('futarchy_account_id');
+    sessionStorage.setItem(accountPickerKey, '1');
+  }
+
+  function githubLoginUrl() {
+    if (sessionStorage.getItem(accountPickerKey) === '1') {
+      return githubLoginBaseUrl + '?prompt=select_account';
+    }
+    return githubLoginBaseUrl;
   }
 
   function consumeAuthFragment() {
@@ -252,7 +262,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     if (!auth) {
       authBar.innerHTML = '<button id="login-btn">Sign in with GitHub</button>';
       document.getElementById('login-btn').onclick = () => {
-        window.location.href = githubLoginUrl;
+        window.location.href = githubLoginUrl();
       };
       return;
     }
@@ -483,8 +493,11 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       <div class="auth-panel">
         <h2>Sign in with GitHub</h2>
         <p>Use standard GitHub OAuth. On first login, Futarchy creates your account from your GitHub identity and credits it with 100 play-money credits.</p>
+        ${sessionStorage.getItem(accountPickerKey) === '1'
+          ? '<p>You are signed out locally. The next sign-in will show GitHub account selection instead of silently reusing the last session.</p>'
+          : ''}
         <div class="auth-actions">
-          <a class="btn-primary" href="${githubLoginUrl}">Sign in with GitHub</a>
+          <a class="btn-primary" href="${githubLoginUrl()}">Sign in with GitHub</a>
           <a class="btn-secondary" href="#/">Back to markets</a>
         </div>
       </div>
@@ -812,7 +825,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         if (!auth) {
           tradePanel = `<div class="trade-panel">
             <div class="section-title">Trade</div>
-            <div class="login-prompt"><a href="${githubLoginUrl}">Sign in with GitHub</a> to start trading on this market.</div>
+            <div class="login-prompt"><a href="${githubLoginUrl()}">Sign in with GitHub</a> to start trading on this market.</div>
           </div>`;
         } else {
           // Find user's positions for sell limits

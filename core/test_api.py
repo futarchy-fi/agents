@@ -233,6 +233,23 @@ class TestAuth:
         assert len(query["state"][0]) > 20
         assert query["state"][0] in app.state.github_oauth_states
 
+    async def test_oauth_web_login_accepts_select_account_prompt(self, client):
+        with patch("core.api.GITHUB_CLIENT_ID", "client-id"):
+            resp = await client.get("/v1/auth/github/login",
+                                    params={"prompt": "select_account"},
+                                    follow_redirects=False)
+        assert resp.status_code == 302
+        parsed = urlparse(resp.headers["location"])
+        query = parse_qs(parsed.query)
+        assert query["prompt"] == ["select_account"]
+
+    async def test_oauth_web_login_rejects_unknown_prompt(self, client):
+        with patch("core.api.GITHUB_CLIENT_ID", "client-id"):
+            resp = await client.get("/v1/auth/github/login",
+                                    params={"prompt": "consent"})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "github_oauth_invalid_prompt"
+
     async def test_oauth_callback_rejects_invalid_state(self, client):
         with patch("core.api.GITHUB_CLIENT_ID", "client-id"), \
                 patch("core.api.GITHUB_CLIENT_SECRET", "client-secret"):
