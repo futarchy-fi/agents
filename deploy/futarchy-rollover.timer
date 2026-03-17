@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily futarchy market rollover
+
+[Timer]
+OnCalendar=*-*-* 00:05:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
