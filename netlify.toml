@@ -8,8 +8,19 @@
   status = 200
   force = true
 
-# SPA: serve dashboard.html for all non-file routes
+# Serve the marketing landing page at the site root.
 [[redirects]]
-  from = "/*"
+  from = "/"
+  to = "/landing.html"
+  status = 200
+
+# Keep the trading UI on its own route.
+[[redirects]]
+  from = "/dashboard"
+  to = "/dashboard.html"
+  status = 200
+
+[[redirects]]
+  from = "/dashboard/*"
   to = "/dashboard.html"
   status = 200

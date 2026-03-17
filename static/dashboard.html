@@ -15,6 +15,8 @@ code, .mono { font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; }
 header { display: flex; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid #30363d; margin-bottom: 24px; flex-wrap: wrap; }
 header h1 { font-size: 20px; font-weight: 600; }
 header .subtitle { color: #8b949e; font-size: 14px; }
+header .home-link { display: inline-flex; align-items: center; padding: 5px 10px; border: 1px solid #30363d; border-radius: 999px; color: #8b949e; font-size: 13px; }
+header .home-link:hover { color: #e6edf3; border-color: #58a6ff; text-decoration: none; }
 header .spacer { flex: 1; }
 
 /* Auth bar in header */
@@ -193,6 +195,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   <header>
     <h1>Futarchy</h1>
     <span class="subtitle">Prediction Markets</span>
+    <a href="/" class="home-link">Home</a>
     <span class="spacer"></span>
     <div id="auth-bar" class="auth-bar"></div>
   </header>
