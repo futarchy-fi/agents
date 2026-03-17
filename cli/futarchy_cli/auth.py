@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import sys
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def require_auth() -> str:
 
 
 def login(client) -> None:
-    """Simple registration — pick a username, get an API key."""
+    """GitHub device-flow login."""
     # Check if already logged in
     existing = get_api_key()
     if existing:
@@ -48,32 +49,49 @@ def login(client) -> None:
         print("  Run `futarchy logout` to reset.\n")
         return
 
-    # Prompt for username
     try:
-        username = input("\n  Choose a username: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("")
-        sys.exit(1)
-
-    if not username:
-        print("Error: username cannot be empty.", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        resp = client.register(username)
+        flow = client.device_auth_start()
     except Exception as e:
         print(f"\n  Error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    verification_uri = flow.get("verification_uri", "https://github.com/login/device")
+    user_code = flow.get("user_code", "")
+    device_code = flow.get("device_code", "")
+    interval = int(flow.get("interval", 5))
+
+    print("\n  Sign in with GitHub")
+    print(f"  Open: {verification_uri}")
+    print(f"  Code: {user_code}")
+    print("\n  Waiting for authorization...\n")
+
+    while True:
+        try:
+            resp = client.device_auth_poll(device_code)
+            break
+        except Exception as e:
+            status = getattr(e, "status", None)
+            detail = getattr(e, "detail", str(e))
+            if status == 202:
+                time.sleep(interval)
+                continue
+            if status == 410:
+                print("\n  Device code expired. Run `futarchy login` again.\n",
+                      file=sys.stderr)
+                sys.exit(1)
+            print(f"\n  Error: {detail}", file=sys.stderr)
+            sys.exit(1)
+
     api_key = resp.get("api_key", "")
     account_id = resp.get("account_id", "?")
+    github_login = resp.get("github_login", "")
 
     cfg = load_config()
     cfg["api_key"] = api_key
-    cfg["username"] = username
+    cfg["github_login"] = github_login
     save_config(cfg)
 
-    print(f"\n  Logged in as {username} (account #{account_id})")
+    print(f"\n  Logged in as {github_login} (account #{account_id})")
     print(f"  Key saved to {CONFIG_FILE}")
     print("\n  You have 100 credits to start trading.")
     print("  Try: futarchy markets\n")
@@ -83,6 +101,7 @@ def logout() -> None:
     """Remove saved credentials."""
     cfg = load_config()
     cfg.pop("api_key", None)
+    cfg.pop("github_login", None)
     cfg.pop("username", None)
     save_config(cfg)
     print(f"\n  Logged out. Config cleared at {CONFIG_FILE}\n")
