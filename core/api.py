@@ -304,24 +304,29 @@ async def health() -> HealthResponse:
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/auth/github/login")
-async def auth_github_login() -> RedirectResponse:
+async def auth_github_login(prompt: str | None = None) -> RedirectResponse:
     """Start GitHub OAuth web flow."""
     if not GITHUB_CLIENT_ID:
         raise APIError(501, "github_oauth_unavailable",
                        "GITHUB_CLIENT_ID not configured")
+    if prompt is not None and prompt != "select_account":
+        raise APIError(400, "github_oauth_invalid_prompt",
+                       "Unsupported OAuth prompt")
 
     state = secrets.token_urlsafe(32)
     async with app.state.lock:
         _prune_github_oauth_states()
         _github_oauth_states()[state] = datetime.now(timezone.utc)
 
-    params = urlencode({
+    params = {
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": GITHUB_OAUTH_REDIRECT_URI,
         "state": state,
-    })
+    }
+    if prompt:
+        params["prompt"] = prompt
     return RedirectResponse(
-        url=f"https://github.com/login/oauth/authorize?{params}",
+        url=f"https://github.com/login/oauth/authorize?{urlencode(params)}",
         status_code=302,
     )
 
