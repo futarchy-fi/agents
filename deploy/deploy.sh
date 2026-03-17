@@ -4,6 +4,9 @@
 # Uses flock to prevent concurrent runs.  If a second push arrives
 # while this script is running, it exits immediately (the first
 # invocation already fetched the latest commit).
+#
+# After git reset, re-execs deploy/post-deploy.sh from the fresh
+# checkout so that new post-deploy logic always runs on first deploy.
 set -euo pipefail
 
 REPO_DIR="/opt/futarchy/agents"
@@ -44,22 +47,9 @@ fi
 
 sudo /usr/bin/systemctl restart futarchy.service
 
-# Install and start rollover timer if not already installed
-if ! sudo systemctl is-active --quiet futarchy-rollover.timer 2>/dev/null; then
-    echo "Installing futarchy-rollover timer..."
-    sudo cp deploy/futarchy-rollover.service /etc/systemd/system/
-    sudo cp deploy/futarchy-rollover.timer /etc/systemd/system/
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now futarchy-rollover.timer
+# Hand off to post-deploy from the fresh checkout.
+if [ -x deploy/post-deploy.sh ]; then
+    exec deploy/post-deploy.sh
 fi
-
-# Always update the service/timer files in case they changed
-sudo cp deploy/futarchy-rollover.service /etc/systemd/system/
-sudo cp deploy/futarchy-rollover.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-
-# Run one immediate rollover after deploy (background, non-blocking)
-echo "Running immediate rollover..."
-sudo systemctl start futarchy-rollover.service &
 
 echo "Deploy complete at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
