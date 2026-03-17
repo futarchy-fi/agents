@@ -760,13 +760,27 @@ async def admin_override_status(market_id: int, req: dict,
 
     async with app.state.lock:
         old_status = m.status
+        old_resolution = m.resolution
         m.status = new_status
         if new_status == "void":
             m.resolution = None
+
+        # Record in the ledger — every state change must be auditable.
+        from core.models import Transaction
+        tx = Transaction.new(
+            account_id=m.amm_account_id,
+            available_delta=ZERO,
+            frozen_delta=ZERO,
+            reason="admin_status_override",
+            market_id=market_id,
+        )
+        app.state.risk.transactions.append(tx)
+
         _save()
 
     return {"market_id": market_id, "old_status": old_status,
-            "new_status": new_status}
+            "old_resolution": old_resolution,
+            "new_status": new_status, "tx_id": tx.id}
 
 
 @app.patch("/v1/admin/markets/{market_id}/metadata")
