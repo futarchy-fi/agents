@@ -1,0 +1,15 @@
+[build]
+  publish = "static"
+
+# Proxy API calls to production so preview deploys can trade
+[[redirects]]
+  from = "/v1/*"
+  to = "https://api.futarchy.ai/v1/:splat"
+  status = 200
+  force = true
+
+# SPA: serve dashboard.html for all non-file routes
+[[redirects]]
+  from = "/*"
+  to = "/dashboard.html"
+  status = 200

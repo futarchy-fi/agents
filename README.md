@@ -1,5 +1,7 @@
 # agents
 
+[![Netlify Status](https://api.netlify.com/api/v1/badges/8edb0b66-5be8-4350-bd14-68f1f895ae9b/deploy-status)](https://app.netlify.com/projects/futarchy-ai/deploys)
+
 What if an organization was governed by prediction markets instead of management?
 
 ## The Idea
