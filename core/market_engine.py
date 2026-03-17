@@ -170,6 +170,7 @@ class MarketEngine:
 
         from core.models import _now
         market.resolved_at = _now()
+        self._sweep_amm(market)
 
     def void(self, market_id: int) -> None:
         """
@@ -200,6 +201,29 @@ class MarketEngine:
 
         from core.models import _now
         market.resolved_at = _now()
+        self._sweep_amm(market)
+
+    def _sweep_amm(self, market: Market) -> None:
+        """Return the AMM's remaining balance to the original funder.
+
+        After resolve or void, the AMM account may hold leftover credits
+        (the house edge on resolve, or the full liquidity on void).
+        Transfer them back to the account that funded the market so the
+        treasury can reuse the credits for new markets.
+        """
+        funder_id = market.metadata.get("funding_account_id")
+        if funder_id is None:
+            return  # market was funded by minting, nowhere to return
+        funder_id = int(funder_id)
+
+        amm = self.risk.get_account(market.amm_account_id)
+        remainder = amm.available_balance
+        if remainder <= ZERO:
+            return
+
+        self.risk.transfer_available(
+            amm.id, funder_id, remainder,
+            market_id=market.id, reason="amm_sweep")
 
     # ------------------------------------------------------------------
     # Trading
