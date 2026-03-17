@@ -169,6 +169,57 @@ class TestAuth:
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "github_token_invalid"
 
+    async def test_device_flow_start_requires_client_id(self, client):
+        with patch("core.api.GITHUB_CLIENT_ID", ""):
+            resp = await client.post("/v1/auth/device", json={})
+        assert resp.status_code == 501
+        assert resp.json()["error"]["code"] == "device_flow_unavailable"
+
+    async def test_device_flow_start_returns_user_code(self, client):
+        mock = AsyncMock(return_value={
+            "device_code": "device-123",
+            "user_code": "ABCD-EFGH",
+            "verification_uri": "https://github.com/login/device",
+            "expires_in": 900,
+            "interval": 5,
+        })
+        with patch("core.api.GITHUB_CLIENT_ID", "client-id"), \
+                patch("core.api.start_device_flow", mock):
+            resp = await client.post("/v1/auth/device", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["user_code"] == "ABCD-EFGH"
+        assert data["verification_uri"] == "https://github.com/login/device"
+
+    async def test_device_flow_poll_pending(self, client):
+        mock = AsyncMock(side_effect=ValueError("device_flow_pending"))
+        with patch("core.api.GITHUB_CLIENT_ID", "client-id"), \
+                patch("core.api.poll_device_flow", mock):
+            resp = await client.post("/v1/auth/device/token",
+                                     json={"device_code": "device-123"})
+        assert resp.status_code == 202
+        assert resp.json()["error"]["code"] == "device_flow_pending"
+
+    async def test_device_flow_poll_creates_account(self, client):
+        poll_mock = AsyncMock(return_value={"access_token": "gho_token"})
+        validate_mock = AsyncMock(return_value={"id": 77, "login": "octocat"})
+        with patch("core.api.GITHUB_CLIENT_ID", "client-id"), \
+                patch("core.api.poll_device_flow", poll_mock), \
+                patch("core.api.validate_github_token", validate_mock):
+            resp = await client.post("/v1/auth/device/token",
+                                     json={"device_code": "device-123"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["github_login"] == "octocat"
+
+        me = await client.get("/v1/me", headers=_user_headers(data["api_key"]))
+        assert me.status_code == 200
+        assert me.json()["available"] == "1000"
+
+    async def test_register_endpoint_removed(self, client):
+        resp = await client.post("/v1/auth/register", json={"username": "alice"})
+        assert resp.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # Auth Boundaries
@@ -903,6 +954,7 @@ class TestDashboard:
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         assert "Futarchy" in resp.text
+        assert "Sign in with GitHub" in resp.text
 
     async def test_landing_page_links_to_dashboard(self, client):
         """Landing page must contain a link to the dashboard."""
@@ -923,9 +975,9 @@ class TestDashboard:
         # The dashboard uses: api('/markets' + params), api('/markets/' + id), etc.
         # The api() function prepends '/v1', so effective paths are /v1/markets, etc.
         # We extract the path fragments passed to api() and prepend /v1.
-        api_calls = re.findall(r"api\(['\"]([^'\"]+)['\"]", dashboard_html)
+        api_calls = re.findall(r"(?:api|requestJson)\(['\"]([^'\"]+)['\"]", dashboard_html)
         # Also catch template-literal patterns like api('/markets/' + id)
-        api_calls += re.findall(r"api\(['\"/]([^'\"+ )]+)", dashboard_html)
+        api_calls += re.findall(r"(?:api|requestJson)\(['\"/]([^'\"+ )]+)", dashboard_html)
 
         # Normalize: strip leading slash, dedupe
         raw_paths = set()

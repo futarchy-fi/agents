@@ -19,6 +19,7 @@ header .spacer { flex: 1; }
 
 /* Auth bar in header */
 .auth-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.auth-bar .auth-label { color: #8b949e; }
 .auth-bar .username { color: #3fb950; font-weight: 500; }
 .auth-bar .balance { color: #58a6ff; font-family: 'SF Mono', monospace; }
 .auth-bar button { padding: 4px 12px; border-radius: 6px; border: 1px solid #30363d; background: #21262d; color: #e6edf3; cursor: pointer; font-size: 13px; }
@@ -27,10 +28,13 @@ header .spacer { flex: 1; }
 .auth-bar button.logout:hover { background: #3d1f1f33; }
 
 /* Filter tabs */
-.tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+.market-controls { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.tabs { display: flex; gap: 4px; }
 .tab { padding: 6px 16px; border-radius: 6px; border: 1px solid #30363d; background: transparent; color: #8b949e; cursor: pointer; font-size: 14px; }
 .tab:hover { color: #e6edf3; border-color: #8b949e; }
 .tab.active { background: #21262d; color: #e6edf3; border-color: #58a6ff; }
+.repo-filter { display: flex; align-items: center; gap: 8px; color: #8b949e; font-size: 13px; }
+.repo-filter select { padding: 6px 10px; border-radius: 6px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; font-size: 13px; }
 
 /* Market cards */
 .market-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; cursor: pointer; transition: border-color 0.15s; }
@@ -43,6 +47,7 @@ header .spacer { flex: 1; }
 .badge-resolved { background: #1a3a5c; color: #58a6ff; }
 .badge-void { background: #3d2e1f; color: #f0883e; }
 .badge-conditional { background: #1a1a2e; color: #b388ff; border: 1px solid #4a3a6e; }
+.repo-pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; background: #0d1117; color: #8b949e; border: 1px solid #30363d; }
 
 /* Price bar */
 .price-bar-container { margin-bottom: 8px; }
@@ -112,20 +117,29 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 .loading { text-align: center; padding: 40px; color: #8b949e; }
 .error-msg { text-align: center; padding: 40px; color: #f85149; }
 
-/* --- Auth panel (register/login) --- */
+/* --- Auth panel (GitHub device flow) --- */
 .auth-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; max-width: 400px; margin: 40px auto; }
 .auth-panel h2 { font-size: 18px; margin-bottom: 16px; }
 .auth-panel p { font-size: 13px; color: #8b949e; margin-bottom: 16px; }
-.auth-panel .form-row { display: flex; gap: 8px; margin-bottom: 12px; }
-.auth-panel input[type="text"] { flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid #30363d; background: #0d1117; color: #e6edf3; font-size: 14px; outline: none; }
-.auth-panel input[type="text"]:focus { border-color: #58a6ff; }
 .auth-panel .btn-primary { padding: 8px 20px; border-radius: 6px; border: 1px solid #238636; background: #238636; color: #fff; cursor: pointer; font-size: 14px; font-weight: 500; }
 .auth-panel .btn-primary:hover { background: #2ea043; }
 .auth-panel .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.auth-panel .api-key-display { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-top: 12px; font-family: 'SF Mono', monospace; font-size: 12px; word-break: break-all; color: #f0883e; }
-.auth-panel .api-key-display .label { color: #8b949e; font-family: system-ui; font-size: 12px; display: block; margin-bottom: 4px; }
+.auth-panel .btn-secondary { padding: 8px 14px; border-radius: 6px; border: 1px solid #30363d; background: transparent; color: #e6edf3; cursor: pointer; font-size: 13px; }
+.auth-panel .btn-secondary:hover { border-color: #58a6ff; color: #58a6ff; }
+.auth-panel .device-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin: 16px 0; }
+.auth-panel .device-label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.auth-panel .device-code { display: block; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; font-size: 30px; letter-spacing: 0.16em; color: #e6edf3; margin-bottom: 12px; word-break: break-word; }
+.auth-panel .device-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.auth-panel .status { display: flex; align-items: center; gap: 10px; min-height: 20px; font-size: 13px; color: #8b949e; margin-top: 12px; }
+.auth-panel .status.waiting { color: #58a6ff; }
+.auth-panel .status.error { color: #f85149; }
+.auth-panel .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #30363d; border-top-color: #58a6ff; animation: spin 0.8s linear infinite; }
 .auth-panel .success-msg { color: #3fb950; font-size: 13px; margin-top: 8px; }
 .auth-panel .error { color: #f85149; font-size: 13px; margin-top: 8px; }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 /* --- Trading panel --- */
 .trade-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 24px; }
@@ -202,34 +216,48 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   const app = document.getElementById('app');
   const authBar = document.getElementById('auth-bar');
   let pollTimer = null;
+  let authPollTimer = null;
+  let authFlowState = null;
   let currentFilter = 'open';
+  let currentRepoFilter = sessionStorage.getItem('futarchy_repo_filter') || 'all';
 
   // --- Auth state ---
   function getAuth() {
     const key = localStorage.getItem('futarchy_api_key');
-    const username = localStorage.getItem('futarchy_username');
+    const githubLogin = localStorage.getItem('futarchy_github_login');
     const accountId = localStorage.getItem('futarchy_account_id');
-    if (key && username) return { key, username, accountId };
+    if (key && githubLogin) return { key, githubLogin, accountId };
     return null;
   }
 
-  function setAuth(apiKey, username, accountId) {
+  function setAuth(apiKey, githubLogin, accountId) {
     localStorage.setItem('futarchy_api_key', apiKey);
-    localStorage.setItem('futarchy_username', username);
+    localStorage.setItem('futarchy_github_login', githubLogin);
+    localStorage.removeItem('futarchy_username');
     localStorage.setItem('futarchy_account_id', String(accountId));
   }
 
   function clearAuth() {
+    clearAuthPolling();
+    authFlowState = null;
     localStorage.removeItem('futarchy_api_key');
+    localStorage.removeItem('futarchy_github_login');
     localStorage.removeItem('futarchy_username');
     localStorage.removeItem('futarchy_account_id');
+  }
+
+  function clearAuthPolling() {
+    if (authPollTimer) {
+      clearTimeout(authPollTimer);
+      authPollTimer = null;
+    }
   }
 
   // --- Render auth bar ---
   async function renderAuthBar() {
     const auth = getAuth();
     if (!auth) {
-      authBar.innerHTML = '<button id="login-btn">Sign Up / Log In</button>';
+      authBar.innerHTML = '<button id="login-btn">Sign in with GitHub</button>';
       document.getElementById('login-btn').onclick = () => {
         location.hash = '#/auth';
       };
@@ -241,7 +269,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       const me = await apiAuth('/me');
       balanceText = fmtVal(me.available) + ' credits';
     } catch (e) {
-      if (e.message && e.message.includes('401')) {
+      if (e.status === 401) {
         clearAuth();
         renderAuthBar();
         return;
@@ -249,7 +277,8 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       balanceText = '...';
     }
     authBar.innerHTML = `
-      <span class="username">${esc(auth.username)}</span>
+      <span class="auth-label">Signed in as</span>
+      <span class="username">${esc(auth.githubLogin)}</span>
       <span class="balance">${balanceText}</span>
       <button id="portfolio-btn">Portfolio</button>
       <button id="logout-btn" class="logout">Logout</button>
@@ -263,23 +292,50 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   }
 
   // --- API helpers ---
+  async function requestJson(path, opts) {
+    const resp = await fetch('/v1' + path, opts);
+    let data = null;
+    try {
+      data = await resp.json();
+    } catch (_) {}
+    return { resp, data };
+  }
+
+  function getErrorMessage(data, fallback) {
+    if (data && data.error && data.error.message) return data.error.message;
+    if (data && data.detail) return data.detail;
+    if (data && data.message) return data.message;
+    return fallback;
+  }
+
   async function api(path) {
-    const resp = await fetch('/v1' + path);
-    if (!resp.ok) throw new Error('API ' + resp.status);
-    return resp.json();
+    const result = await requestJson(path);
+    if (!result.resp.ok) {
+      const error = new Error(getErrorMessage(result.data, 'API ' + result.resp.status));
+      error.status = result.resp.status;
+      throw error;
+    }
+    return result.data;
   }
 
   async function apiAuth(path, opts) {
     const auth = getAuth();
-    if (!auth) throw new Error('Not authenticated');
-    const headers = { 'Authorization': 'Bearer ' + auth.key, 'Content-Type': 'application/json' };
-    const resp = await fetch('/v1' + path, Object.assign({ headers }, opts || {}));
-    if (!resp.ok) {
-      let errMsg = 'API ' + resp.status;
-      try { const data = await resp.json(); errMsg = data.detail || data.message || errMsg; } catch (_) {}
-      throw new Error(errMsg);
+    if (!auth) {
+      const error = new Error('Not authenticated');
+      error.status = 401;
+      throw error;
     }
-    return resp.json();
+    const headers = Object.assign(
+      { 'Authorization': 'Bearer ' + auth.key, 'Content-Type': 'application/json' },
+      (opts && opts.headers) || {},
+    );
+    const result = await requestJson(path, Object.assign({}, opts || {}, { headers }));
+    if (!result.resp.ok) {
+      const error = new Error(getErrorMessage(result.data, 'API ' + result.resp.status));
+      error.status = result.resp.status;
+      throw error;
+    }
+    return result.data;
   }
 
   function pct(v) { return (parseFloat(v) * 100).toFixed(1); }
@@ -301,6 +357,16 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   }
   function badgeClass(status) {
     return 'badge badge-' + status;
+  }
+  function marketRepo(m) {
+    if (m.metadata && m.metadata.repo) return m.metadata.repo;
+    if (!m.category_id) return '';
+    return m.category_id.split('#')[0] || '';
+  }
+  function shortRepo(repo) {
+    if (!repo) return 'unknown';
+    const parts = repo.split('/');
+    return parts[parts.length - 1] || repo;
   }
 
   // --- LMSR helpers (lightweight, for labels + estimates) ---
@@ -395,6 +461,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 
   function route() {
     clearInterval(pollTimer);
+    clearAuthPolling();
     const hash = location.hash || '#/';
     const marketMatch = hash.match(/^#\/market\/(\d+)$/);
     if (hash === '#/auth') {
@@ -416,62 +483,147 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       location.hash = '#/portfolio';
       return;
     }
+    const flow = authFlowState;
+    const isWaiting = !!(flow && flow.status === 'waiting');
+    const isExpired = !!(flow && flow.status === 'expired');
+    const hasCode = !!(flow && flow.userCode);
+
     app.innerHTML = `
       <a class="back-link" href="#/">\u2190 Markets</a>
       <div class="auth-panel">
-        <h2>Create Account</h2>
-        <p>Pick a username to get started. You will receive 100 credits to trade with. No email or password required.</p>
-        <div class="form-row">
-          <input type="text" id="reg-username" placeholder="Username" maxlength="40" autocomplete="off">
-          <button class="btn-primary" id="reg-btn">Register</button>
+        <h2>Sign in with GitHub</h2>
+        <p>Authorize with GitHub device flow. On first login, Futarchy creates your account from your GitHub identity and credits it with 100 play-money credits.</p>
+        ${hasCode ? `
+          <div class="device-card">
+            <div class="device-label">One-time code</div>
+            <span class="device-code">${esc(flow.userCode)}</span>
+            <div class="device-actions">
+              <button class="btn-secondary" id="copy-code-btn">Copy code</button>
+              <a href="${esc(flow.verificationUri)}" target="_blank" rel="noopener">Open GitHub verification page</a>
+            </div>
+          </div>
+        ` : ''}
+        <div class="device-actions">
+          <button class="btn-primary" id="device-login-btn">${hasCode ? 'Restart sign-in' : 'Sign in with GitHub'}</button>
+          ${isExpired ? '<button class="btn-secondary" id="retry-login-btn">Try again</button>' : ''}
         </div>
-        <div id="reg-feedback"></div>
+        <div class="status ${isWaiting ? 'waiting' : flow && flow.status === 'error' ? 'error' : ''}" id="device-feedback">
+          ${isWaiting ? '<span class="spinner" aria-hidden="true"></span>' : ''}
+          <span>${esc(flow && flow.message ? flow.message : 'Click the button to start GitHub sign-in.')}</span>
+        </div>
       </div>
     `;
-    const input = document.getElementById('reg-username');
-    const btn = document.getElementById('reg-btn');
-    const feedback = document.getElementById('reg-feedback');
+    const startBtn = document.getElementById('device-login-btn');
+    const retryBtn = document.getElementById('retry-login-btn');
+    const copyBtn = document.getElementById('copy-code-btn');
 
-    async function doRegister() {
-      const username = input.value.trim();
-      if (!username) { feedback.innerHTML = '<div class="error">Enter a username.</div>'; return; }
-      btn.disabled = true;
-      btn.textContent = 'Creating...';
+    function scheduleDevicePoll(delayMs) {
+      clearAuthPolling();
+      authPollTimer = setTimeout(pollDeviceFlow, delayMs);
+    }
+
+    async function startDeviceFlow() {
+      clearAuthPolling();
+      authFlowState = { status: 'waiting', message: 'Requesting GitHub device code...' };
+      renderAuthPanel();
       try {
-        const resp = await fetch('/v1/auth/register', {
+        const result = await requestJson('/auth/device', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username }),
+          body: JSON.stringify({}),
         });
-        const data = await resp.json();
-        if (!resp.ok) {
-          feedback.innerHTML = '<div class="error">' + esc(data.detail || data.message || 'Registration failed') + '</div>';
-          btn.disabled = false;
-          btn.textContent = 'Register';
+        if (!result.resp.ok) {
+          authFlowState = {
+            status: 'error',
+            message: getErrorMessage(result.data, 'Failed to start GitHub sign-in.'),
+          };
+          renderAuthPanel();
           return;
         }
-        setAuth(data.api_key, username, data.account_id);
-        feedback.innerHTML = `
-          <div class="success-msg">Account created! You have 100 credits.</div>
-          <div class="api-key-display">
-            <span class="label">Your API key (save it!):</span>
-            ${esc(data.api_key)}
-          </div>
-        `;
-        btn.style.display = 'none';
-        input.style.display = 'none';
-        renderAuthBar();
-        setTimeout(() => { location.hash = '#/'; }, 2000);
+        authFlowState = {
+          deviceCode: result.data.device_code,
+          userCode: result.data.user_code,
+          verificationUri: result.data.verification_uri,
+          intervalMs: (result.data.interval || 5) * 1000,
+          expiresAt: Date.now() + ((result.data.expires_in || 900) * 1000),
+          status: 'waiting',
+          message: 'Waiting for GitHub authorization...',
+        };
+        renderAuthPanel();
+        scheduleDevicePoll(authFlowState.intervalMs);
       } catch (e) {
-        feedback.innerHTML = '<div class="error">Network error. Try again.</div>';
-        btn.disabled = false;
-        btn.textContent = 'Register';
+        authFlowState = { status: 'error', message: e.message || 'Network error. Try again.' };
+        renderAuthPanel();
       }
     }
 
-    btn.onclick = doRegister;
-    input.onkeydown = (e) => { if (e.key === 'Enter') doRegister(); };
-    input.focus();
+    async function pollDeviceFlow() {
+      if (!authFlowState || !authFlowState.deviceCode) return;
+      if (Date.now() >= authFlowState.expiresAt) {
+        authFlowState = { status: 'expired', message: 'Code expired. Try again.' };
+        renderAuthPanel();
+        return;
+      }
+
+      try {
+        const result = await requestJson('/auth/device/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_code: authFlowState.deviceCode }),
+        });
+
+        if (result.resp.status === 202) {
+          authFlowState.message = 'Waiting for GitHub authorization...';
+          renderAuthPanel();
+          scheduleDevicePoll(authFlowState.intervalMs);
+          return;
+        }
+
+        if (result.resp.status === 410) {
+          authFlowState = { status: 'expired', message: 'Code expired. Try again.' };
+          renderAuthPanel();
+          return;
+        }
+
+        if (!result.resp.ok) {
+          authFlowState = {
+            status: 'error',
+            message: getErrorMessage(result.data, 'GitHub sign-in failed.'),
+          };
+          renderAuthPanel();
+          return;
+        }
+
+        setAuth(result.data.api_key, result.data.github_login, result.data.account_id);
+        authFlowState = null;
+        renderAuthBar();
+        location.hash = '#/';
+      } catch (e) {
+        authFlowState = { status: 'error', message: e.message || 'Network error. Try again.' };
+        renderAuthPanel();
+      }
+    }
+
+    if (startBtn) startBtn.onclick = startDeviceFlow;
+    if (retryBtn) retryBtn.onclick = startDeviceFlow;
+    if (copyBtn) {
+      copyBtn.onclick = async () => {
+        if (!flow || !flow.userCode) return;
+        try {
+          await navigator.clipboard.writeText(flow.userCode);
+          authFlowState.message = 'Code copied. Finish authorization on GitHub.';
+        } catch (_) {
+          authFlowState.message = 'Copy failed. Copy the code manually.';
+        }
+        renderAuthPanel();
+        if (authFlowState && authFlowState.status === 'waiting') {
+          scheduleDevicePoll(authFlowState.intervalMs);
+        }
+      };
+    }
+    if (isWaiting && flow && flow.deviceCode && !authPollTimer) {
+      scheduleDevicePoll(flow.intervalMs);
+    }
   }
 
   // --- Portfolio View ---
@@ -586,7 +738,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         ` : ''}
       `;
     } catch (e) {
-      if (e.message && e.message.includes('401')) {
+      if (e.status === 401) {
         clearAuth();
         renderAuthBar();
         location.hash = '#/auth';
@@ -606,10 +758,17 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   }
 
   function renderTabs() {
-    return `<div class="tabs">
-      <button class="tab${currentFilter === 'open' ? ' active' : ''}" data-filter="open">Open</button>
-      <button class="tab${currentFilter === 'settled' ? ' active' : ''}" data-filter="settled">Settled</button>
-      <button class="tab${currentFilter === 'all' ? ' active' : ''}" data-filter="all">All</button>
+    return `<div class="market-controls">
+      <div class="tabs">
+        <button class="tab${currentFilter === 'open' ? ' active' : ''}" data-filter="open">Open</button>
+        <button class="tab${currentFilter === 'settled' ? ' active' : ''}" data-filter="settled">Settled</button>
+        <button class="tab${currentFilter === 'all' ? ' active' : ''}" data-filter="all">All</button>
+      </div>
+      <label class="repo-filter">Repo
+        <select id="repo-filter">
+          <option value="all">All repos</option>
+        </select>
+      </label>
     </div>`;
   }
 
@@ -622,6 +781,31 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         fetchAndRenderMarkets();
       };
     });
+    const repoSelect = document.getElementById('repo-filter');
+    if (repoSelect) {
+      repoSelect.value = currentRepoFilter;
+      repoSelect.onchange = () => {
+        currentRepoFilter = repoSelect.value;
+        sessionStorage.setItem('futarchy_repo_filter', currentRepoFilter);
+        fetchAndRenderMarkets();
+      };
+    }
+  }
+
+  function updateRepoFilterOptions(markets) {
+    const repoSelect = document.getElementById('repo-filter');
+    if (!repoSelect) return;
+
+    const repos = Array.from(new Set(markets.map(marketRepo).filter(Boolean))).sort();
+    repoSelect.innerHTML = '<option value="all">All repos</option>' +
+      repos.map(repo => `<option value="${esc(repo)}">${esc(repo)}</option>`).join('');
+
+    const values = ['all'].concat(repos);
+    if (!values.includes(currentRepoFilter)) {
+      currentRepoFilter = 'all';
+      sessionStorage.setItem('futarchy_repo_filter', currentRepoFilter);
+    }
+    repoSelect.value = currentRepoFilter;
   }
 
   async function fetchAndRenderMarkets() {
@@ -629,13 +813,17 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       const statusParam = currentFilter === 'settled' ? 'resolved,void' : currentFilter;
       const params = currentFilter !== 'all' ? '?status=' + statusParam : '';
       const markets = await api('/markets' + params);
+      updateRepoFilterOptions(markets);
       const area = document.getElementById('markets-area');
       if (!area) return;
-      if (markets.length === 0) {
+      const filteredMarkets = currentRepoFilter === 'all'
+        ? markets
+        : markets.filter(m => marketRepo(m) === currentRepoFilter);
+      if (filteredMarkets.length === 0) {
         area.innerHTML = '<div class="empty">No markets found.</div>';
         return;
       }
-      area.innerHTML = markets.map(m => {
+      area.innerHTML = filteredMarkets.map(m => {
         const yesP = m.prices.yes ? parseFloat(m.prices.yes) : 0;
         const noP = m.prices.no ? parseFloat(m.prices.no) : 0;
         const isVoid = m.status === 'void';
@@ -643,6 +831,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         const noPct = m.status === 'open' ? Math.max(noP * 100, 5) : (m.resolution === 'no' ? 100 : 0);
         const conditional = isConditional(m);
         const liq = liquidityLabel(m.b);
+        const repo = marketRepo(m);
 
         let priceBar;
         if (isVoid) {
@@ -664,6 +853,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
           <div class="card-header">
             <span class="card-question">${esc(m.question)}</span>
             <div class="card-badges">
+              ${repo ? `<span class="repo-pill" title="${esc(repo)}">${esc(shortRepo(repo))}</span>` : ''}
               ${conditional ? '<span class="badge badge-conditional">Conditional</span>' : ''}
               <span class="${badgeClass(m.status)}">${m.status}</span>
             </div>
@@ -701,6 +891,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       ]);
 
       const prUrl = m.metadata && m.metadata.pr_url;
+      const repo = marketRepo(m);
       const conditional = isConditional(m);
       const auth = getAuth();
 
@@ -756,7 +947,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         if (!auth) {
           tradePanel = `<div class="trade-panel">
             <div class="section-title">Trade</div>
-            <div class="login-prompt"><a href="#/auth">Sign up</a> to start trading on this market.</div>
+            <div class="login-prompt"><a href="#/auth">Sign in with GitHub</a> to start trading on this market.</div>
           </div>`;
         } else {
           // Find user's positions for sell limits
@@ -857,6 +1048,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         <div class="detail-header">
           <div class="detail-question">${esc(m.question)}</div>
           <div class="detail-meta">
+            ${repo ? `<span class="repo-pill" title="${esc(repo)}">${esc(repo)}</span>` : ''}
             ${conditional ? '<span class="badge badge-conditional">Conditional</span>' : ''}
             <span class="${badgeClass(m.status)}">${m.status}</span>
             ${m.status === 'open' && m.deadline ? `<span>Closes ${fmtDate(m.deadline)}</span>` : ''}
