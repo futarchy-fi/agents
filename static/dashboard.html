@@ -128,6 +128,11 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 .auth-panel .btn-secondary { padding: 8px 14px; border-radius: 6px; border: 1px solid #30363d; background: transparent; color: #e6edf3; cursor: pointer; font-size: 13px; }
 .auth-panel .btn-secondary:hover { border-color: #58a6ff; color: #58a6ff; text-decoration: none; }
 .auth-panel .auth-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.auth-panel .auth-disclosure { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+.auth-panel .auth-disclosure-title { color: #e6edf3; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.auth-panel .auth-disclosure ul { margin-left: 18px; color: #8b949e; font-size: 13px; }
+.auth-panel .auth-disclosure li + li { margin-top: 6px; }
+.auth-panel .auth-footnote { font-size: 12px; color: #8b949e; margin-top: 12px; }
 
 /* --- Trading panel --- */
 .trade-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 24px; }
@@ -262,7 +267,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     if (!auth) {
       authBar.innerHTML = '<button id="login-btn">Sign in with GitHub</button>';
       document.getElementById('login-btn').onclick = () => {
-        window.location.href = githubLoginUrl();
+        location.hash = '#/auth';
       };
       return;
     }
@@ -491,15 +496,24 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     app.innerHTML = `
       <a class="back-link" href="#/">\u2190 Markets</a>
       <div class="auth-panel">
-        <h2>Sign in with GitHub</h2>
-        <p>Use standard GitHub OAuth. On first login, Futarchy creates your account from your GitHub identity and credits it with 100 play-money credits.</p>
+        <h2>Connect GitHub to Futarchy</h2>
+        <p>GitHub is only used to prove who you are and attach a Futarchy trading account to that identity.</p>
+        <div class="auth-disclosure">
+          <div class="auth-disclosure-title">What this sign-in does</div>
+          <ul>
+            <li>Creates or reopens your Futarchy account under your GitHub username.</li>
+            <li>Does not grant Futarchy repo write access, PR controls, or org admin actions.</li>
+            <li>Uses a Futarchy API key for trading after login, not your GitHub account.</li>
+          </ul>
+        </div>
         ${sessionStorage.getItem(accountPickerKey) === '1'
           ? '<p>You are signed out locally. The next sign-in will show GitHub account selection instead of silently reusing the last session.</p>'
           : ''}
         <div class="auth-actions">
-          <a class="btn-primary" href="${githubLoginUrl()}">Sign in with GitHub</a>
+          <a class="btn-primary" href="${githubLoginUrl()}">Continue to GitHub</a>
           <a class="btn-secondary" href="#/">Back to markets</a>
         </div>
+        <div class="auth-footnote">You start with 100 play-money credits after the first successful login.</div>
       </div>
     `;
   }
@@ -825,7 +839,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         if (!auth) {
           tradePanel = `<div class="trade-panel">
             <div class="section-title">Trade</div>
-            <div class="login-prompt"><a href="${githubLoginUrl()}">Sign in with GitHub</a> to start trading on this market.</div>
+            <div class="login-prompt"><a href="#/auth">Sign in with GitHub</a> to start trading on this market.</div>
           </div>`;
         } else {
           // Find user's positions for sell limits
