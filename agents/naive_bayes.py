@@ -19,7 +19,6 @@ import math
 import os
 import subprocess
 import sys
-from decimal import Decimal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,8 +33,8 @@ log = logging.getLogger(__name__)
 API_URL = os.environ.get("FUTARCHY_API_URL", "https://api.futarchy.ai")
 API_KEY = os.environ.get("FUTARCHY_API_KEY", "")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
-VIRTUAL_BANKROLL = float(os.environ.get("VIRTUAL_BANKROLL", "100"))
-MAX_TRADE_PER_MARKET = float(os.environ.get("MAX_TRADE_PER_MARKET", "15"))
+VIRTUAL_BANKROLL = float(os.environ.get("VIRTUAL_BANKROLL", "1000"))
+MIN_TRADE = float(os.environ.get("MIN_TRADE", "0.50"))
 MIN_EDGE = float(os.environ.get("MIN_EDGE", "0.10"))
 KELLY_FRACTION = float(os.environ.get("KELLY_FRACTION", "0.5"))  # half-Kelly
 
@@ -224,38 +223,123 @@ def estimate_merge_probability(repo: str, pr_num: int) -> float:
 # Trading
 # ---------------------------------------------------------------------------
 
-def kelly_bet(prob: float, market_price: float, virtual_bankroll: float) -> tuple[str, float]:
-    """Compute Kelly-optimal bet.
+def _lmsr_price(q_yes: float, q_no: float, b: float) -> float:
+    """LMSR price of YES (numerically stable)."""
+    max_q = max(q_yes, q_no)
+    e_yes = math.exp((q_yes - max_q) / b)
+    e_no = math.exp((q_no - max_q) / b)
+    return e_yes / (e_yes + e_no)
 
-    Returns (outcome, budget) where budget is the amount to trade.
-    Uses half-Kelly for conservatism.
+
+def _lmsr_cost(q_yes: float, q_no: float, b: float) -> float:
+    """LMSR cost function C(q) (numerically stable)."""
+    max_q = max(q_yes, q_no)
+    return max_q + b * math.log(
+        math.exp((q_yes - max_q) / b) + math.exp((q_no - max_q) / b)
+    )
+
+
+def _cost_to_buy(q_yes: float, q_no: float, b: float,
+                 outcome: str, delta: float) -> float:
+    """Cost of buying delta shares of outcome."""
+    if outcome == "yes":
+        return _lmsr_cost(q_yes + delta, q_no, b) - _lmsr_cost(q_yes, q_no, b)
+    else:
+        return _lmsr_cost(q_yes, q_no + delta, b) - _lmsr_cost(q_yes, q_no, b)
+
+
+def _optimal_delta(q_yes: float, q_no: float, b: float,
+                   prob: float, W: float, outcome: str) -> float:
+    """Find optimal shares to buy by maximizing expected log utility.
+
+    The agent maximizes:
+        E[U] = p * log(W - cost + delta) + (1-p) * log(W - cost)
+
+    where cost = LMSR cost of buying delta shares, and p is the
+    agent's belief about the outcome it's buying.
+
+    The FOC is:
+        p * (1 - pi) / (W - c + delta) = (1 - p) * pi / (W - c)
+
+    where pi = marginal price after buying delta shares.
+    Solved by binary search over delta.
     """
-    if prob > market_price + MIN_EDGE:
-        # Buy YES
-        # Kelly fraction for a binary bet at odds implied by market_price:
-        # f = (p * (1/market_price) - 1) / ((1/market_price) - 1)
-        #   = (p - market_price) / (1 - market_price)
-        edge = prob - market_price
-        odds_minus_1 = (1.0 / market_price) - 1.0
-        if odds_minus_1 <= 0:
-            return ("yes", 0.0)
-        f = edge / (1.0 - market_price)
-        budget = f * KELLY_FRACTION * virtual_bankroll
-        return ("yes", min(budget, MAX_TRADE_PER_MARKET))
+    # p here is the agent's belief for the outcome being traded
+    p = prob if outcome == "yes" else (1.0 - prob)
 
-    elif prob < market_price - MIN_EDGE:
-        # Buy NO
-        no_prob = 1.0 - prob
-        no_price = 1.0 - market_price
-        edge = no_prob - no_price
-        if no_price <= 0:
-            return ("no", 0.0)
-        f = edge / (1.0 - no_price)
-        budget = f * KELLY_FRACTION * virtual_bankroll
-        return ("no", min(budget, MAX_TRADE_PER_MARKET))
+    lo, hi = 0.0, W * 2  # upper bound: can't spend more than W
+    best_delta = 0.0
+
+    for _ in range(80):
+        delta = (lo + hi) / 2
+        if delta < 1e-6:
+            break
+
+        cost = _cost_to_buy(q_yes, q_no, b, outcome, delta)
+
+        # Can't afford
+        if cost >= W:
+            hi = delta
+            continue
+
+        # Marginal price after trade
+        if outcome == "yes":
+            pi = _lmsr_price(q_yes + delta, q_no, b)
+        else:
+            pi = _lmsr_price(q_yes, q_no + delta, b)
+            # For NO outcome, pi is price of YES — we need price of NO
+            pi = 1.0 - _lmsr_price(q_yes, q_no + delta, b)
+
+        wealth_after_loss = W - cost
+        wealth_after_win = W - cost + delta
+
+        if wealth_after_loss <= 1e-9 or wealth_after_win <= 1e-9:
+            hi = delta
+            continue
+
+        # FOC: p*(1-pi)/(W-c+δ) - (1-p)*pi/(W-c) = 0
+        # Positive → buy more, negative → buy less
+        foc = p * (1.0 - pi) / wealth_after_win - (1.0 - p) * pi / wealth_after_loss
+
+        if foc > 1e-12:
+            lo = delta
+            best_delta = delta
+        else:
+            hi = delta
+
+    # Apply Kelly fraction for conservatism
+    best_delta *= KELLY_FRACTION
+
+    # Compute actual cost for the chosen delta
+    if best_delta < 1e-6:
+        return 0.0
+    return best_delta
+
+
+def compute_trade(prob: float, q_yes: float, q_no: float, b: float,
+                  virtual_bankroll: float) -> tuple[str, float]:
+    """Compute optimal trade given belief, LMSR state, and wealth.
+
+    Returns (outcome, budget) — the credits to spend.
+    """
+    yes_price = _lmsr_price(q_yes, q_no, b)
+
+    if prob > yes_price + MIN_EDGE:
+        delta = _optimal_delta(q_yes, q_no, b, prob, virtual_bankroll, "yes")
+        if delta < 1e-6:
+            return ("", 0.0)
+        cost = _cost_to_buy(q_yes, q_no, b, "yes", delta)
+        return ("yes", cost)
+
+    elif prob < yes_price - MIN_EDGE:
+        delta = _optimal_delta(q_yes, q_no, b, prob, virtual_bankroll, "no")
+        if delta < 1e-6:
+            return ("", 0.0)
+        cost = _cost_to_buy(q_yes, q_no, b, "no", delta)
+        return ("no", cost)
 
     else:
-        return ("", 0.0)  # no trade — edge too small
+        return ("", 0.0)
 
 
 def get_my_account_id() -> int | None:
@@ -322,8 +406,17 @@ def run(dry_run: bool = False):
                 log.warning("Market %d: can't determine repo/PR, skipping", market_id)
                 continue
 
-        prices = market.get("prices", {})
-        yes_price = float(prices.get("yes", 0.5))
+        # Fetch market detail for LMSR state (q, b)
+        detail = api_get(f"/markets/{market_id}")
+        if not detail:
+            log.warning("Market %d: can't fetch detail, skipping", market_id)
+            continue
+
+        q = detail.get("q", {})
+        q_yes = float(q.get("yes", 0))
+        q_no = float(q.get("no", 0))
+        b = float(detail.get("b", 100))
+        yes_price = _lmsr_price(q_yes, q_no, b)
 
         # Check existing position
         position = get_my_position(market_id, account_id)
@@ -332,12 +425,12 @@ def run(dry_run: bool = False):
         # Estimate
         prob = estimate_merge_probability(repo, pr_num)
 
-        # Kelly sizing
-        outcome, budget = kelly_bet(prob, yes_price, VIRTUAL_BANKROLL)
+        # Optimal trade: maximize expected log utility over LMSR
+        outcome, budget = compute_trade(prob, q_yes, q_no, b, VIRTUAL_BANKROLL)
 
-        if budget < 0.50:  # minimum trade size
+        if budget < MIN_TRADE:
             if not has_position:
-                log.info("Market %d (%s#%d): est=%.2f, price=%.2f, edge too small",
+                log.info("Market %d (%s#%d): est=%.2f, price=%.2f, edge too small or no profitable trade",
                          market_id, repo, pr_num, prob, yes_price)
             continue
 
@@ -345,21 +438,20 @@ def run(dry_run: bool = False):
         if has_position:
             existing_value = position.get(outcome, 0.0)
             if existing_value > 0:
-                # Already have exposure — reduce additional bet
                 budget = max(0, budget - existing_value * yes_price)
-                if budget < 0.50:
+                if budget < MIN_TRADE:
                     log.info("Market %d: already positioned, skipping", market_id)
                     continue
 
         # Check actual balance
         if budget > balance:
             budget = balance
-        if budget < 0.50:
+        if budget < MIN_TRADE:
             log.warning("Insufficient balance, stopping")
             break
 
-        log.info("Market %d (%s#%d): est=%.2f, price=%.2f → %s %.2f credits",
-                 market_id, repo, pr_num, prob, yes_price, outcome.upper(), budget)
+        log.info("Market %d (%s#%d): est=%.2f, price=%.2f, b=%.1f → %s %.2f credits",
+                 market_id, repo, pr_num, prob, yes_price, b, outcome.upper(), budget)
 
         if dry_run:
             continue
