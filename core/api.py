@@ -736,6 +736,39 @@ async def admin_add_liquidity(market_id: int, req: AddLiquidityRequest,
     )
 
 
+@app.patch("/v1/admin/markets/{market_id}/status")
+async def admin_override_status(market_id: int, req: dict,
+                                _: AdminDep) -> dict:
+    """Admin override: correct a market's status.
+
+    Only allowed on markets with 0 trades (no settlement reversal needed).
+    Accepts {"status": "void"} to correct a wrongly-resolved market.
+    """
+    m = app.state.me.markets.get(market_id)
+    if m is None:
+        raise APIError(404, "market_not_found", f"Market {market_id} not found")
+
+    new_status = req.get("status")
+    if new_status not in ("void", "resolved", "open"):
+        raise APIError(400, "invalid_status",
+                       "Status must be 'void', 'resolved', or 'open'")
+
+    if len(m.trades) > 0:
+        raise APIError(409, "has_trades",
+                       f"Market {market_id} has {len(m.trades)} trades; "
+                       "status override not safe without settlement reversal")
+
+    async with app.state.lock:
+        old_status = m.status
+        m.status = new_status
+        if new_status == "void":
+            m.resolution = None
+        _save()
+
+    return {"market_id": market_id, "old_status": old_status,
+            "new_status": new_status}
+
+
 @app.patch("/v1/admin/markets/{market_id}/metadata")
 async def admin_update_metadata(market_id: int, req: UpdateMetadataRequest,
                                 _: AdminDep) -> dict:
