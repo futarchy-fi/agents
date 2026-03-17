@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from core.api_errors import APIError, api_error_handler, translate_engine_error
 from core.api_models import (
-    GitHubAuthRequest, AuthResponse,
+    AuthResponse,
     DeviceFlowStartRequest, DeviceFlowResponse, DeviceFlowPollRequest,
     AccountResponse, LockResponse,
     MarketSummary, MarketDetail, PositionEntry, TradeResponse,
@@ -303,22 +303,6 @@ async def health() -> HealthResponse:
 # Auth (no API key required)
 # ---------------------------------------------------------------------------
 
-@app.post("/v1/auth/github")
-async def auth_github(req: GitHubAuthRequest) -> AuthResponse:
-    """Exchange a GitHub token for an API key."""
-    try:
-        gh = await validate_github_token(req.github_token)
-    except ValueError as e:
-        code = str(e)
-        if code == "github_token_invalid":
-            raise APIError(401, "github_token_invalid",
-                           "GitHub token is invalid or expired")
-        raise APIError(502, "github_api_error",
-                       f"GitHub API error: {code}")
-
-    return await _authenticate_github_identity(gh)
-
-
 @app.get("/v1/auth/github/login")
 async def auth_github_login() -> RedirectResponse:
     """Start GitHub OAuth web flow."""
@@ -334,7 +318,6 @@ async def auth_github_login() -> RedirectResponse:
     params = urlencode({
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": GITHUB_OAUTH_REDIRECT_URI,
-        "scope": "read:user",
         "state": state,
     })
     return RedirectResponse(

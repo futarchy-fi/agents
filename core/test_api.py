@@ -28,7 +28,7 @@ os.environ["FUTARCHY_ADMIN_KEY"] = "test-admin-key"
 os.environ["FUTARCHY_STATE"] = "/tmp/futarchy_test_state.json"
 os.environ["INITIAL_CREDITS"] = "1000"
 
-from core.api import app
+from core.api import app, _authenticate_github_identity
 from core.auth import AuthStore
 from core.middleware import rate_limiter, RateLimiter
 from core.models import reset_counters
@@ -67,13 +67,12 @@ async def client():
 
 async def _mock_auth(client: AsyncClient, github_id=1,
                      login="testuser") -> str:
-    """Helper: create a user via mocked GitHub and return the API key."""
-    mock_gh = AsyncMock(return_value={"id": github_id, "login": login})
-    with patch("core.api.validate_github_token", mock_gh):
-        resp = await client.post("/v1/auth/github",
-                                 json={"github_token": "ghp_fake"})
-    assert resp.status_code == 200
-    return resp.json()["api_key"]
+    """Helper: create a user and return the API key."""
+    auth = await _authenticate_github_identity({
+        "id": github_id,
+        "login": login,
+    })
+    return auth.api_key
 
 
 def _user_headers(api_key: str) -> dict:
@@ -164,13 +163,10 @@ class TestAuth:
 
         assert resp1.json()["account_id"] != resp2.json()["account_id"]
 
-    async def test_invalid_github_token(self, client):
-        mock = AsyncMock(side_effect=ValueError("github_token_invalid"))
-        with patch("core.api.validate_github_token", mock):
-            resp = await client.post("/v1/auth/github",
-                                     json={"github_token": "bad"})
-        assert resp.status_code == 401
-        assert resp.json()["error"]["code"] == "github_token_invalid"
+    async def test_token_exchange_endpoint_removed(self, client):
+        resp = await client.post("/v1/auth/github",
+                                 json={"github_token": "bad"})
+        assert resp.status_code == 404
 
     async def test_device_flow_start_requires_client_id(self, client):
         with patch("core.api.GITHUB_CLIENT_ID", ""):
@@ -233,7 +229,7 @@ class TestAuth:
         assert query["redirect_uri"] == [
             "https://api.futarchy.ai/v1/auth/callback"
         ]
-        assert query["scope"] == ["read:user"]
+        assert "scope" not in query
         assert len(query["state"][0]) > 20
         assert query["state"][0] in app.state.github_oauth_states
 
