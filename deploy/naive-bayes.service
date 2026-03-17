@@ -1,0 +1,11 @@
+[Unit]
+Description=Naive-bayes PR forecaster
+After=futarchy.service
+Requires=futarchy.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/futarchy/agents
+EnvironmentFile=/etc/futarchy-naive-bayes.env
+ExecStart=/opt/futarchy/agents/.venv/bin/python3 agents/naive_bayes.py

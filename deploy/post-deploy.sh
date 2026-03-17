@@ -13,9 +13,20 @@ if ! sudo systemctl is-active --quiet futarchy-rollover.timer 2>/dev/null; then
     sudo systemctl enable --now futarchy-rollover.timer
 fi
 
+# Install naive-bayes forecaster timer if not already installed
+if ! sudo systemctl is-active --quiet naive-bayes.timer 2>/dev/null; then
+    echo "Installing naive-bayes timer..."
+    sudo cp deploy/naive-bayes.service /etc/systemd/system/
+    sudo cp deploy/naive-bayes.timer /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now naive-bayes.timer
+fi
+
 # Always update the service/timer files in case they changed
 sudo cp deploy/futarchy-rollover.service /etc/systemd/system/
 sudo cp deploy/futarchy-rollover.timer /etc/systemd/system/
+sudo cp deploy/naive-bayes.service /etc/systemd/system/
+sudo cp deploy/naive-bayes.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 
 # Run one immediate rollover after deploy (background, non-blocking)

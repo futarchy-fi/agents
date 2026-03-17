@@ -29,6 +29,7 @@ from core.api_models import (
     DepthEntry, DepthResponse,
     BuyRequest, SellRequest, TradeResult,
     CreateAccountResponse,
+    CreateServiceAccountRequest, CreateServiceAccountResponse,
     MintRequest, MintResponse,
     CreateMarketRequest, CreateMarketResponse,
     ResolveRequest, HealthResponse,
@@ -580,6 +581,60 @@ async def admin_create_account(_: AdminDep) -> CreateAccountResponse:
         acc = app.state.risk.create_account()
         _save()
     return CreateAccountResponse(account_id=acc.id)
+
+
+@app.post("/v1/admin/service-accounts")
+async def admin_create_service_account(
+        req: CreateServiceAccountRequest, _: AdminDep
+) -> CreateServiceAccountResponse:
+    """Create a service account (bot/agent) with a username and API key.
+
+    Optionally mint initial credits. Returns the raw API key once.
+    """
+    username = req.username.strip()
+    if not username or len(username) > 40:
+        raise APIError(400, "invalid_username",
+                       "Username must be 1-40 characters")
+
+    async with app.state.lock:
+        auth_store = app.state.auth_store
+        if username in auth_store.local_users:
+            raise APIError(409, "username_taken",
+                           f"Username '{username}' is already taken")
+
+        acc = app.state.risk.create_account()
+
+        if req.initial_credits:
+            try:
+                amount = Decimal(req.initial_credits)
+            except InvalidOperation:
+                raise APIError(400, "invalid_amount",
+                               f"Invalid credits: {req.initial_credits}")
+            if amount > ZERO:
+                app.state.risk.mint(acc.id, amount)
+
+        import hashlib
+        import secrets
+        raw_key = secrets.token_urlsafe(32)
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+        from core.auth import User, _now
+        user = User(
+            github_id=0,
+            github_login=username,
+            account_id=acc.id,
+            api_key_hash=key_hash,
+        )
+        auth_store.local_users[username] = user
+        auth_store.key_to_user[key_hash] = user
+
+        _save()
+
+    return CreateServiceAccountResponse(
+        account_id=acc.id,
+        username=username,
+        api_key=raw_key,
+    )
 
 
 @app.post("/v1/admin/mint")
