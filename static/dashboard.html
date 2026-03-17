@@ -205,6 +205,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   const authBar = document.getElementById('auth-bar');
   const githubLoginBaseUrl = '/v1/auth/github/login';
   const accountPickerKey = 'futarchy_force_account_picker';
+  const detailUiState = {};
   let pollTimer = null;
   let currentFilter = 'open';
   let currentRepoFilter = sessionStorage.getItem('futarchy_repo_filter') || 'all';
@@ -761,6 +762,12 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 
   async function fetchAndRenderDetail(id) {
     try {
+      const existingLmsrRef = app.querySelector('details.lmsr-ref');
+      if (existingLmsrRef) {
+        if (!detailUiState[id]) detailUiState[id] = {};
+        detailUiState[id].lmsrRefOpen = existingLmsrRef.open;
+      }
+
       const [m, trades, positions, depthData] = await Promise.all([
         api('/markets/' + id),
         api('/markets/' + id + '/trades'),
@@ -886,7 +893,8 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       }
 
       // LMSR reference
-      const lmsrRef = `<details class="lmsr-ref">
+      const lmsrRefOpen = !!(detailUiState[id] && detailUiState[id].lmsrRefOpen);
+      const lmsrRef = `<details class="lmsr-ref"${lmsrRefOpen ? ' open' : ''}>
         <summary>LMSR Reference \u2014 how this market works</summary>
         <div class="ref-content">
           <h4>Cost Function</h4>
@@ -991,6 +999,14 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       // Bind trading panel if present
       if (m.status === 'open' && auth) {
         bindTradePanel(m, positions);
+      }
+
+      const lmsrRefEl = app.querySelector('details.lmsr-ref');
+      if (lmsrRefEl) {
+        lmsrRefEl.addEventListener('toggle', () => {
+          if (!detailUiState[id]) detailUiState[id] = {};
+          detailUiState[id].lmsrRefOpen = lmsrRefEl.open;
+        });
       }
 
     } catch (e) {
