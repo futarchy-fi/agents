@@ -306,6 +306,10 @@ class TestAuthBoundaries:
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "auth_required"
 
+        resp = await client.get("/v1/me/activity")
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "auth_required"
+
     async def test_bad_key(self, client):
         resp = await client.get("/v1/me",
                                 headers={"Authorization": "Bearer bad-key"})
@@ -335,6 +339,112 @@ class TestAuthBoundaries:
         assert resp.status_code == 200
         assert resp.json() == []
 
+
+# ---------------------------------------------------------------------------
+# Account Activity
+# ---------------------------------------------------------------------------
+
+class TestAccountActivity:
+    async def test_activity_shows_void_refunds_and_resolved_losses(self, client):
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                 json={"question": "Void me?", "category": "t",
+                                       "category_id": "t#void"})
+        assert resp.status_code == 200
+        void_mid = resp.json()["market_id"]
+
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                 json={"question": "Lose me?", "category": "t",
+                                       "category_id": "t#loss"})
+        assert resp.status_code == 200
+        loss_mid = resp.json()["market_id"]
+
+        key = await _mock_auth(client, github_id=35, login="trader35")
+        headers = _user_headers(key)
+
+        resp = await client.post(f"/v1/markets/{void_mid}/buy", headers=headers,
+                                 json={"outcome": "yes", "budget": "50"})
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/v1/admin/markets/{void_mid}/void",
+                                 headers=ADMIN_HEADERS)
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/v1/markets/{loss_mid}/buy", headers=headers,
+                                 json={"outcome": "yes", "budget": "30"})
+        assert resp.status_code == 200
+
+        resp = await client.post(f"/v1/admin/markets/{loss_mid}/resolve",
+                                 headers=ADMIN_HEADERS,
+                                 json={"outcome": "no"})
+        assert resp.status_code == 200
+
+        resp = await client.get("/v1/me/activity", headers=headers)
+        assert resp.status_code == 200
+        payload = resp.json()
+        activity = payload["entries"]
+        assert payload["has_more"] is False
+        assert payload["next_before_tx_id"] is None
+        assert len(activity) >= 5
+
+        assert activity[0]["market_id"] == loss_mid
+        assert activity[0]["summary"] == "Resolved market loss"
+        assert Decimal(activity[0]["total_delta"]) < 0
+        assert Decimal(activity[0]["total_after"]) < Decimal("1000")
+
+        void_entry = next(
+            entry for entry in activity
+            if entry["market_id"] == void_mid and "Void" in entry["summary"]
+        )
+        assert void_entry["market_status"] == "void"
+        assert Decimal(void_entry["available_after"]) == Decimal("1000")
+        assert Decimal(void_entry["frozen_after"]) == Decimal("0")
+
+        buy_entry = next(
+            entry for entry in activity
+            if entry["market_id"] == loss_mid and entry["reason"] == "lock:position:yes"
+        )
+        assert buy_entry["summary"] == "Bought YES"
+        assert buy_entry["outcome"] == "yes"
+        assert Decimal(buy_entry["available_delta"]) < 0
+        assert Decimal(buy_entry["frozen_delta"]) > 0
+        assert Decimal(buy_entry["total_delta"]) == Decimal("0")
+
+    async def test_activity_paginates_with_before_tx_id_cursor(self, client):
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                 json={"question": "Paginate?", "category": "t",
+                                       "category_id": "t#page"})
+        assert resp.status_code == 200
+        mid = resp.json()["market_id"]
+
+        key = await _mock_auth(client, github_id=55, login="pager")
+        headers = _user_headers(key)
+
+        for _ in range(3):
+            resp = await client.post(f"/v1/markets/{mid}/buy", headers=headers,
+                                     json={"outcome": "yes", "budget": "10"})
+            assert resp.status_code == 200
+
+        resp = await client.get("/v1/me/activity", headers=headers,
+                                params={"limit": 2})
+        assert resp.status_code == 200
+        first_page = resp.json()
+
+        assert len(first_page["entries"]) == 2
+        assert first_page["has_more"] is True
+        assert first_page["next_before_tx_id"] == first_page["entries"][-1]["tx_id"]
+        assert first_page["entries"][0]["tx_id"] > first_page["entries"][1]["tx_id"]
+
+        resp = await client.get("/v1/me/activity", headers=headers,
+                                params={"limit": 2,
+                                        "before_tx_id": first_page["next_before_tx_id"]})
+        assert resp.status_code == 200
+        second_page = resp.json()
+
+        assert len(second_page["entries"]) == 2
+        assert second_page["entries"][0]["tx_id"] < first_page["entries"][-1]["tx_id"]
+        assert second_page["entries"][0]["tx_id"] > second_page["entries"][1]["tx_id"]
+        assert second_page["has_more"] is False
+        assert second_page["next_before_tx_id"] is None
 
 # ---------------------------------------------------------------------------
 # Public Market Data

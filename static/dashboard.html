@@ -18,10 +18,12 @@ header .subtitle { color: #8b949e; font-size: 14px; }
 header .spacer { flex: 1; }
 
 /* Auth bar in header */
-.auth-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.auth-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; justify-content: flex-end; }
 .auth-bar .auth-label { color: #8b949e; }
 .auth-bar .username { color: #3fb950; font-weight: 500; }
+.auth-bar .balance-wrap { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
 .auth-bar .balance { color: #58a6ff; font-family: 'SF Mono', monospace; }
+.auth-bar .balance-detail { color: #8b949e; font-size: 12px; font-family: 'SF Mono', monospace; }
 .auth-bar button { padding: 4px 12px; border-radius: 6px; border: 1px solid #30363d; background: #21262d; color: #e6edf3; cursor: pointer; font-size: 13px; }
 .auth-bar button:hover { border-color: #58a6ff; }
 .auth-bar button.logout { color: #f85149; border-color: #f85149; background: transparent; }
@@ -186,6 +188,19 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 .position-card .pos-market a { color: #58a6ff; }
 .position-card .pos-details { display: flex; gap: 20px; font-size: 13px; }
 .position-card .pos-details .pos-outcome { font-weight: 500; }
+.activity-help { color: #8b949e; font-size: 13px; margin: -4px 0 12px; }
+.activity-table td { vertical-align: top; }
+.activity-summary { font-weight: 500; }
+.activity-market { color: #8b949e; font-size: 12px; margin-top: 2px; }
+.activity-change { display: flex; flex-direction: column; gap: 2px; }
+.delta { font-family: 'SF Mono', monospace; font-size: 12px; }
+.delta.pos { color: #3fb950; }
+.delta.neg { color: #f85149; }
+.delta.flat { color: #8b949e; }
+.balance-after { font-family: 'SF Mono', monospace; font-size: 13px; }
+.activity-more-btn { margin-top: 12px; padding: 8px 14px; border-radius: 6px; border: 1px solid #30363d; background: transparent; color: #e6edf3; cursor: pointer; font-size: 13px; }
+.activity-more-btn:hover:not(:disabled) { border-color: #58a6ff; color: #58a6ff; }
+.activity-more-btn:disabled { opacity: 0.6; cursor: wait; }
 </style>
 </head>
 <body>
@@ -205,9 +220,13 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   const authBar = document.getElementById('auth-bar');
   const githubLoginBaseUrl = '/v1/auth/github/login';
   const accountPickerKey = 'futarchy_force_account_picker';
+  const ACTIVITY_PAGE_SIZE = 20;
   let pollTimer = null;
   let currentFilter = 'open';
   let currentRepoFilter = sessionStorage.getItem('futarchy_repo_filter') || 'all';
+  let activityEntries = [];
+  let activityHasMore = false;
+  let activityNextBeforeTxId = null;
 
   // --- Auth state ---
   function getAuth() {
@@ -266,23 +285,26 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       };
       return;
     }
-    // Fetch balance
-    let balanceText = '';
+    let balanceMarkup = '<span class="balance-wrap"><span class="balance">...</span></span>';
     try {
       const me = await apiAuth('/me');
-      balanceText = fmtVal(me.available) + ' credits';
+      balanceMarkup = `
+        <span class="balance-wrap">
+          <span class="balance">${fmtVal(me.total)} total</span>
+          <span class="balance-detail">${fmtVal(me.available)} avail · ${fmtVal(me.frozen)} frozen</span>
+        </span>
+      `;
     } catch (e) {
       if (e.status === 401) {
         clearAuth();
         renderAuthBar();
         return;
       }
-      balanceText = '...';
     }
     authBar.innerHTML = `
       <span class="auth-label">Signed in as</span>
       <span class="username">${esc(auth.githubLogin)}</span>
-      <span class="balance">${balanceText}</span>
+      ${balanceMarkup}
       <button id="portfolio-btn">Portfolio</button>
       <button id="logout-btn" class="logout">Logout</button>
     `;
@@ -345,6 +367,11 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   function fmtPrice(v) { return (parseFloat(v) * 100).toFixed(1) + '\u00a2'; }
   function fmtVal(v) { return parseFloat(v).toFixed(2); }
   function fmtCredits(v) { return parseFloat(v).toFixed(0); }
+  function fmtSigned(v) {
+    const n = parseFloat(v);
+    const prefix = n > 0 ? '+' : '';
+    return prefix + n.toFixed(2);
+  }
   function fmtDate(iso) {
     if (!iso) return '\u2014';
     const d = new Date(iso);
@@ -370,6 +397,82 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     if (!repo) return 'unknown';
     const parts = repo.split('/');
     return parts[parts.length - 1] || repo;
+  }
+  function deltaClass(v) {
+    const n = parseFloat(v);
+    if (n > 0) return 'pos';
+    if (n < 0) return 'neg';
+    return 'flat';
+  }
+  function renderActivityTable(activity) {
+    return `<table class="activity-table">
+      <tr><th>Time</th><th>Event</th><th>Change</th><th>Balance After</th></tr>
+      ${activity.map(entry => {
+        const marketText = entry.market_id
+          ? `<a href="#/market/${entry.market_id}">${esc(entry.market_question || ('Market #' + entry.market_id))}</a>`
+          : '';
+        const metaBits = [];
+        if (entry.market_status) metaBits.push(entry.market_status);
+        if (entry.market_resolution) metaBits.push('resolves ' + entry.market_resolution.toUpperCase());
+        return `<tr>
+          <td class="mono">${esc(fmtTime(entry.created_at))}</td>
+          <td>
+            <div class="activity-summary" title="${esc(entry.reason)}">${esc(entry.summary)}</div>
+            ${marketText ? `<div class="activity-market">${marketText}${metaBits.length ? ' · ' + esc(metaBits.join(' · ')) : ''}</div>` : ''}
+          </td>
+          <td>
+            <div class="activity-change">
+              <span class="delta ${deltaClass(entry.available_delta)}">Avail ${fmtSigned(entry.available_delta)}</span>
+              <span class="delta ${deltaClass(entry.frozen_delta)}">Frozen ${fmtSigned(entry.frozen_delta)}</span>
+            </div>
+          </td>
+          <td>
+            <div class="balance-after">${fmtVal(entry.total_after)} total</div>
+            <div class="activity-market">${fmtVal(entry.available_after)} avail · ${fmtVal(entry.frozen_after)} frozen</div>
+          </td>
+        </tr>`;
+      }).join('')}
+    </table>`;
+  }
+  function renderActivitySection() {
+    return `
+      <div class="section-title" style="margin-top:24px">Activity</div>
+      <div class="activity-help">Showing latest ${activityEntries.length}${activityHasMore ? '+' : ''} entries. Buys move credits from available to frozen. Total only changes when you sell, a market resolves, or a market is voided.</div>
+      ${activityEntries.length === 0 ? '<div class="empty">No account activity yet.</div>' : renderActivityTable(activityEntries)}
+      ${activityHasMore ? '<button id="activity-more-btn" class="activity-more-btn">Load older activity</button>' : ''}
+    `;
+  }
+  function bindActivityControls() {
+    const btn = document.getElementById('activity-more-btn');
+    if (!btn) return;
+    btn.onclick = loadMoreActivity;
+  }
+  async function loadMoreActivity() {
+    if (!activityHasMore || !activityNextBeforeTxId) return;
+    const btn = document.getElementById('activity-more-btn');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+    try {
+      const page = await apiAuth('/me/activity?limit=' + ACTIVITY_PAGE_SIZE + '&before_tx_id=' + activityNextBeforeTxId);
+      activityEntries = activityEntries.concat(page.entries || []);
+      activityHasMore = !!page.has_more;
+      activityNextBeforeTxId = page.next_before_tx_id || null;
+      const panel = document.getElementById('activity-panel');
+      if (panel) {
+        panel.innerHTML = renderActivitySection();
+        bindActivityControls();
+      }
+    } catch (e) {
+      if (e.status === 401) {
+        clearAuth();
+        renderAuthBar();
+        location.hash = '#/auth';
+        return;
+      }
+      btn.disabled = false;
+      btn.textContent = 'Retry loading older activity';
+    }
   }
 
   // --- LMSR helpers (lightweight, for labels + estimates) ---
@@ -529,10 +632,14 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     if (!area) return;
 
     try {
-      const [me, allMarkets] = await Promise.all([
+      const [me, activityPage, allMarkets] = await Promise.all([
         apiAuth('/me'),
+        apiAuth('/me/activity?limit=' + ACTIVITY_PAGE_SIZE),
         api('/markets'),
       ]);
+      activityEntries = activityPage.entries || [];
+      activityHasMore = !!activityPage.has_more;
+      activityNextBeforeTxId = activityPage.next_before_tx_id || null;
 
       // Find positions for this account across all markets
       const accountId = parseInt(auth.accountId);
@@ -602,6 +709,8 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
           }).join('')
         }
 
+        <div id="activity-panel">${renderActivitySection()}</div>
+
         ${me.locks && me.locks.length > 0 ? `
           <div class="section-title" style="margin-top:24px">Active Locks (${me.locks.length})</div>
           <table>
@@ -615,6 +724,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
           </table>
         ` : ''}
       `;
+      bindActivityControls();
     } catch (e) {
       if (e.status === 401) {
         clearAuth();

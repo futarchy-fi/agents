@@ -20,14 +20,14 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse
 
 from core.api_errors import APIError, api_error_handler, translate_engine_error
 from core.api_models import (
     AuthResponse,
     DeviceFlowStartRequest, DeviceFlowResponse, DeviceFlowPollRequest,
-    AccountResponse, LockResponse,
+    AccountResponse, AccountActivityEntry, AccountActivityPage, LockResponse,
     MarketSummary, MarketDetail, PositionEntry, TradeResponse,
     DepthEntry, DepthResponse,
     BuyRequest, SellRequest, TradeResult,
@@ -125,6 +125,118 @@ def _save():
     save_snapshot(app.state.risk, app.state.me, STATE_PATH,
                   auth_store=app.state.auth_store,
                   tracked_repos=app.state.tracked_repos)
+
+
+def _outcome_from_reason(reason: str) -> str | None:
+    for prefix in (
+        "lock:position:",
+        "increase_lock:position:",
+        "decrease_lock:position:",
+    ):
+        if reason.startswith(prefix):
+            return reason[len(prefix):]
+    return None
+
+
+def _tx_outcome(tx, market) -> str | None:
+    if tx.trade_id is not None and market is not None:
+        for trade in market.trades:
+            if trade.id == tx.trade_id:
+                return trade.outcome
+    return _outcome_from_reason(tx.reason)
+
+
+def _activity_summary(tx, market, outcome: str | None) -> str:
+    reason = tx.reason
+    outcome_label = outcome.upper() if outcome else "position"
+
+    if reason == "mint":
+        return "Initial credits"
+
+    if reason.startswith("lock:position:"):
+        return f"Bought {outcome_label}"
+    if reason.startswith("increase_lock:position:"):
+        return f"Bought more {outcome_label}"
+    if reason.startswith("decrease_lock:position:"):
+        if market is not None and market.status == "void":
+            return f"Void refund for {outcome_label}"
+        return f"Released {outcome_label} collateral"
+
+    if reason == "lock:conditional_loss":
+        return "Sale loss reserved"
+    if reason == "increase_lock:conditional_loss":
+        return "Additional sale loss reserved"
+    if reason == "decrease_lock:conditional_loss":
+        if market is not None and market.status == "void":
+            return "Void refund"
+        return "Loss offset released"
+
+    if reason == "trade_pnl:in":
+        return "Sale profit reserved"
+    if reason == "trade_pnl:out":
+        return "Sale profit paid out"
+    if reason == "pnl_net:in":
+        return "Loss offset received"
+    if reason == "pnl_net:out":
+        return "Profit offset returned"
+    if reason == "void_return_cp:out":
+        return "Void profit return"
+    if reason == "void_return_cp:in":
+        return "Void profit reclaimed"
+
+    if reason == "settlement":
+        if market is not None and market.status == "void":
+            return "Void settlement"
+        if market is not None and market.status == "resolved":
+            if tx.available_delta > ZERO:
+                if outcome and market.resolution == outcome:
+                    return f"Resolved {outcome_label} payout"
+                return "Resolved market payout"
+            return "Resolved market loss"
+        return "Market settlement"
+
+    return reason.replace("_", " ").replace(":", " ")
+
+
+def _build_account_activity(account_id: int) -> list[AccountActivityEntry]:
+    account_txs = [
+        tx for tx in app.state.risk.transactions
+        if tx.account_id == account_id
+    ]
+    available = ZERO
+    frozen = ZERO
+    entries: list[AccountActivityEntry] = []
+
+    for tx in account_txs:
+        available += tx.available_delta
+        frozen += tx.frozen_delta
+        market = app.state.me.markets.get(tx.market_id) if tx.market_id else None
+        outcome = _tx_outcome(tx, market)
+        total_delta = tx.available_delta + tx.frozen_delta
+        entries.append(
+            AccountActivityEntry(
+                tx_id=tx.id,
+                created_at=tx.created_at,
+                summary=_activity_summary(tx, market, outcome),
+                reason=tx.reason,
+                outcome=outcome,
+                available_delta=str(tx.available_delta),
+                frozen_delta=str(tx.frozen_delta),
+                total_delta=str(total_delta),
+                available_after=str(available),
+                frozen_after=str(frozen),
+                total_after=str(available + frozen),
+                market_id=tx.market_id,
+                market_question=market.question if market else None,
+                market_status=market.status if market else None,
+                market_resolution=market.resolution if market else None,
+                trade_id=tx.trade_id,
+                lock_id=tx.lock_id,
+            )
+        )
+
+    entries.reverse()
+    return entries
 
 
 def _github_oauth_states() -> dict[str, datetime]:
@@ -609,6 +721,27 @@ async def get_me(user: AuthUser) -> AccountResponse:
         frozen=str(acc.frozen_balance),
         total=str(acc.total),
         locks=locks,
+    )
+
+
+@app.get("/v1/me/activity")
+async def get_my_activity(
+    user: AuthUser,
+    limit: int = Query(50, ge=1, le=200),
+    before_tx_id: int | None = Query(None, ge=1),
+) -> AccountActivityPage:
+    """Get authenticated user's account activity with cursor pagination."""
+    entries = _build_account_activity(user.account_id)
+    if before_tx_id is not None:
+        entries = [entry for entry in entries if entry.tx_id < before_tx_id]
+
+    page_entries = entries[:limit]
+    has_more = len(entries) > limit
+    next_before_tx_id = page_entries[-1].tx_id if has_more and page_entries else None
+    return AccountActivityPage(
+        entries=page_entries,
+        has_more=has_more,
+        next_before_tx_id=next_before_tx_id,
     )
 
 

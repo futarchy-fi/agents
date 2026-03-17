@@ -42,6 +42,30 @@ class AccountResponse(BaseModel):
     total: str
     locks: list[LockResponse]
 
+class AccountActivityEntry(BaseModel):
+    tx_id: int
+    created_at: str
+    summary: str
+    reason: str
+    outcome: str | None = None
+    available_delta: str
+    frozen_delta: str
+    total_delta: str
+    available_after: str
+    frozen_after: str
+    total_after: str
+    market_id: int | None = None
+    market_question: str | None = None
+    market_status: str | None = None
+    market_resolution: str | None = None
+    trade_id: int | None = None
+    lock_id: int | None = None
+
+class AccountActivityPage(BaseModel):
+    entries: list[AccountActivityEntry]
+    has_more: bool
+    next_before_tx_id: int | None = None
+
 
 # --- Markets ---
 

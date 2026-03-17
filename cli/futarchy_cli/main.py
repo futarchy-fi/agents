@@ -108,6 +108,13 @@ def cmd_me(args) -> int:
     return 0
 
 
+def cmd_activity(args) -> int:
+    client = _authed_client(args)
+    data = client.activity(limit=args.limit, before_tx_id=args.before_tx_id)
+    _output(args, data, fmt.activity_page)
+    return 0
+
+
 def cmd_buy(args) -> int:
     client = _authed_client(args)
     result = client.buy(args.market_id, args.outcome, args.budget)
@@ -158,6 +165,13 @@ def main(argv: list[str] | None = None) -> int:
     # futarchy me
     _sub(sub, "me", help="Show balance and positions")
 
+    # futarchy activity
+    p_activity = _sub(sub, "activity", help="Show account activity")
+    p_activity.add_argument("--limit", type=int, default=20,
+                            help="Number of entries to fetch (default: 20)")
+    p_activity.add_argument("--before-tx-id", type=int, default=None,
+                            help="Fetch entries older than this transaction ID")
+
     # futarchy buy <id> <outcome> <budget>
     p_buy = _sub(sub, "buy", help="Buy outcome tokens")
     p_buy.add_argument("market_id", type=int, help="Market ID")
@@ -183,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         "logout": cmd_logout,
         "update": cmd_update,
         "me": cmd_me,
+        "activity": cmd_activity,
         "buy": cmd_buy,
         "sell": cmd_sell,
     }
