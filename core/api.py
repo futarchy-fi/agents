@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -28,6 +29,7 @@ from core.api_models import (
     AuthResponse,
     DeviceFlowStartRequest, DeviceFlowResponse, DeviceFlowPollRequest,
     AccountResponse, AccountActivityEntry, AccountActivityPage, LockResponse,
+    CliVersionResponse,
     MarketSummary, MarketDetail, PositionEntry, TradeResponse,
     DepthEntry, DepthResponse,
     BuyRequest, SellRequest, TradeResult,
@@ -58,6 +60,7 @@ STATE_PATH = os.environ.get("FUTARCHY_STATE", "./futarchy_state.json")
 INITIAL_CREDITS = Decimal(os.environ.get("INITIAL_CREDITS", "100"))
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
+MIN_SUPPORTED_CLI_VERSION = os.environ.get("FUTARCHY_MIN_SUPPORTED_CLI_VERSION") or None
 TREASURY_ACCOUNT_ID = os.environ.get("FUTARCHY_TREASURY_ID", "")
 GITHUB_OAUTH_REDIRECT_URI = os.environ.get(
     "GITHUB_OAUTH_REDIRECT_URI",
@@ -78,6 +81,24 @@ LIQUIDITY_BUDGET = os.environ.get("LIQUIDITY_BUDGET", "200")
 MARKET_EXPIRY_CHECK_INTERVAL_SECONDS = float(
     os.environ.get("MARKET_EXPIRY_CHECK_INTERVAL_SECONDS", "60")
 )
+CLI_INIT_PATH = Path(__file__).resolve().parents[1] / "cli" / "futarchy_cli" / "__init__.py"
+
+
+def _read_cli_version() -> str:
+    try:
+        text = CLI_INIT_PATH.read_text(encoding="utf-8")
+    except OSError:
+        logger.warning("Unable to read CLI version from %s", CLI_INIT_PATH)
+        return "0.0.0"
+
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+    if not match:
+        logger.warning("Unable to parse CLI version from %s", CLI_INIT_PATH)
+        return "0.0.0"
+    return match.group(1)
+
+
+LATEST_CLI_VERSION = _read_cli_version()
 
 
 @asynccontextmanager
@@ -408,6 +429,16 @@ async def health() -> HealthResponse:
             len(auth_store.users) +
             len(getattr(auth_store, "local_users", {}))
         ),
+    )
+
+
+@app.get("/v1/cli/version")
+async def cli_version() -> CliVersionResponse:
+    """Get the latest published CLI version for update checks."""
+    return CliVersionResponse(
+        latest_version=LATEST_CLI_VERSION,
+        minimum_supported_version=MIN_SUPPORTED_CLI_VERSION,
+        update_command="futarchy update",
     )
 
 

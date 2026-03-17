@@ -12,6 +12,7 @@ from . import __version__
 from . import api as api_mod
 from . import auth
 from . import fmt
+from .update_check import maybe_warn_about_update
 
 
 def _add_global_args(parser: argparse.ArgumentParser) -> None:
@@ -189,6 +190,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         parser.print_help()
         return 0
+
+    if args.command != "update":
+        maybe_warn_about_update(args.api_url or auth.get_api_url(),
+                                json_output=args.json_output)
 
     dispatch = {
         "markets": cmd_markets,
