@@ -201,10 +201,15 @@ async def install_script():
 
 @app.get("/v1/health")
 async def health() -> HealthResponse:
+    auth_store = app.state.auth_store
     return HealthResponse(
         status="ok",
         markets=len(app.state.me.markets),
-        accounts=len(app.state.risk.accounts),
+        ledger_accounts=len(app.state.risk.accounts),
+        users=(
+            len(auth_store.users) +
+            len(getattr(auth_store, "local_users", {}))
+        ),
     )
 
 

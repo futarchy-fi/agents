@@ -89,7 +89,28 @@ class TestHealth:
         data = resp.json()
         assert data["status"] == "ok"
         assert data["markets"] == 0
-        assert data["accounts"] == 0
+        assert data["ledger_accounts"] == 0
+        assert data["users"] == 0
+
+    async def test_health_separates_ledger_accounts_from_users(self, client):
+        resp = await client.post("/v1/admin/markets", headers=ADMIN_HEADERS,
+                                 json={"question": "Will it rain?",
+                                       "category": "weather",
+                                       "category_id": "weather#1"})
+        assert resp.status_code == 200
+
+        await _mock_auth(client, github_id=1, login="alice")
+
+        resp = await client.post("/v1/auth/register",
+                                 json={"username": "local-user"})
+        assert resp.status_code == 200
+
+        resp = await client.get("/v1/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["markets"] == 1
+        assert data["ledger_accounts"] == 3
+        assert data["users"] == 2
 
 
 # ---------------------------------------------------------------------------

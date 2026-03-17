@@ -171,7 +171,8 @@ class UpdateMetadataRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     markets: int
-    accounts: int
+    ledger_accounts: int
+    users: int
 
 
 # --- Tracked Repos ---
