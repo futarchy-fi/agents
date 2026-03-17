@@ -19,12 +19,14 @@ class APIError(Exception):
 
 
 class Client:
-    def __init__(self, api_url: str = DEFAULT_API_URL, api_key: str | None = None):
+    def __init__(self, api_url: str = DEFAULT_API_URL,
+                 api_key: str | None = None,
+                 timeout: float = TIMEOUT):
         self.base = api_url.rstrip("/")
         headers = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        self._http = httpx.Client(base_url=self.base, headers=headers, timeout=TIMEOUT)
+        self._http = httpx.Client(base_url=self.base, headers=headers, timeout=timeout)
 
     def _request(self, method: str, path: str, **kwargs) -> dict | list:
         try:
@@ -69,12 +71,18 @@ class Client:
     def me(self) -> dict:
         return self.get("/v1/me")
 
+    def cli_version(self) -> dict:
+        return self.get("/v1/cli/version")
+
     def activity(self, limit: int = 20,
                  before_tx_id: int | None = None) -> dict:
         params = {"limit": limit}
         if before_tx_id is not None:
             params["before_tx_id"] = before_tx_id
         return self.get("/v1/me/activity", **params)
+
+    def close(self) -> None:
+        self._http.close()
 
     # ── Trading endpoints ──
 

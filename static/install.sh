@@ -131,6 +131,7 @@ if command -v futarchy &>/dev/null; then
     printf "  ${BOLD}futarchy markets${NC}        ${DIM}# browse open markets${NC}\n"
     printf "  ${BOLD}futarchy login${NC}          ${DIM}# create an account${NC}\n"
     printf "  ${BOLD}futarchy buy 1 yes 50${NC}   ${DIM}# trade${NC}\n"
+    printf "  ${BOLD}futarchy update${NC}         ${DIM}# update the CLI later${NC}\n"
 else
     success "futarchy installed!"
     echo ""

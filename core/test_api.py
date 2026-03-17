@@ -114,6 +114,14 @@ class TestHealth:
         assert data["ledger_accounts"] == 3
         assert data["users"] == 2
 
+    async def test_cli_version_manifest(self, client):
+        resp = await client.get("/v1/cli/version")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["update_command"] == "futarchy update"
+        assert data["latest_version"]
+        assert data["minimum_supported_version"] is None
+
 
 # ---------------------------------------------------------------------------
 # Auth
