@@ -117,29 +117,17 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 .loading { text-align: center; padding: 40px; color: #8b949e; }
 .error-msg { text-align: center; padding: 40px; color: #f85149; }
 
-/* --- Auth panel (GitHub device flow) --- */
+/* --- Auth panel --- */
 .auth-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; max-width: 400px; margin: 40px auto; }
 .auth-panel h2 { font-size: 18px; margin-bottom: 16px; }
 .auth-panel p { font-size: 13px; color: #8b949e; margin-bottom: 16px; }
+.auth-panel .btn-primary,
+.auth-panel .btn-secondary { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 .auth-panel .btn-primary { padding: 8px 20px; border-radius: 6px; border: 1px solid #238636; background: #238636; color: #fff; cursor: pointer; font-size: 14px; font-weight: 500; }
-.auth-panel .btn-primary:hover { background: #2ea043; }
-.auth-panel .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.auth-panel .btn-primary:hover { background: #2ea043; text-decoration: none; }
 .auth-panel .btn-secondary { padding: 8px 14px; border-radius: 6px; border: 1px solid #30363d; background: transparent; color: #e6edf3; cursor: pointer; font-size: 13px; }
-.auth-panel .btn-secondary:hover { border-color: #58a6ff; color: #58a6ff; }
-.auth-panel .device-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin: 16px 0; }
-.auth-panel .device-label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
-.auth-panel .device-code { display: block; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; font-size: 30px; letter-spacing: 0.16em; color: #e6edf3; margin-bottom: 12px; word-break: break-word; }
-.auth-panel .device-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.auth-panel .status { display: flex; align-items: center; gap: 10px; min-height: 20px; font-size: 13px; color: #8b949e; margin-top: 12px; }
-.auth-panel .status.waiting { color: #58a6ff; }
-.auth-panel .status.error { color: #f85149; }
-.auth-panel .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #30363d; border-top-color: #58a6ff; animation: spin 0.8s linear infinite; }
-.auth-panel .success-msg { color: #3fb950; font-size: 13px; margin-top: 8px; }
-.auth-panel .error { color: #f85149; font-size: 13px; margin-top: 8px; }
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
+.auth-panel .btn-secondary:hover { border-color: #58a6ff; color: #58a6ff; text-decoration: none; }
+.auth-panel .auth-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 
 /* --- Trading panel --- */
 .trade-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 24px; }
@@ -215,9 +203,8 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
 (function() {
   const app = document.getElementById('app');
   const authBar = document.getElementById('auth-bar');
+  const githubLoginUrl = '/v1/auth/github/login';
   let pollTimer = null;
-  let authPollTimer = null;
-  let authFlowState = null;
   let currentFilter = 'open';
   let currentRepoFilter = sessionStorage.getItem('futarchy_repo_filter') || 'all';
 
@@ -238,19 +225,25 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   }
 
   function clearAuth() {
-    clearAuthPolling();
-    authFlowState = null;
     localStorage.removeItem('futarchy_api_key');
     localStorage.removeItem('futarchy_github_login');
     localStorage.removeItem('futarchy_username');
     localStorage.removeItem('futarchy_account_id');
   }
 
-  function clearAuthPolling() {
-    if (authPollTimer) {
-      clearTimeout(authPollTimer);
-      authPollTimer = null;
+  function consumeAuthFragment() {
+    if (!window.location.hash.startsWith('#auth=')) {
+      return false;
     }
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const apiKey = params.get('auth');
+    const accountId = params.get('account_id');
+    const login = params.get('login');
+    if (apiKey && login) {
+      setAuth(apiKey, login, accountId || '');
+    }
+    history.replaceState(null, '', window.location.pathname + window.location.search + '#/');
+    return true;
   }
 
   // --- Render auth bar ---
@@ -259,7 +252,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
     if (!auth) {
       authBar.innerHTML = '<button id="login-btn">Sign in with GitHub</button>';
       document.getElementById('login-btn').onclick = () => {
-        location.hash = '#/auth';
+        window.location.href = githubLoginUrl;
       };
       return;
     }
@@ -460,8 +453,10 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   // --- Router ---
 
   function route() {
-    clearInterval(pollTimer);
-    clearAuthPolling();
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
     const hash = location.hash || '#/';
     const marketMatch = hash.match(/^#\/market\/(\d+)$/);
     if (hash === '#/auth') {
@@ -483,147 +478,17 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
       location.hash = '#/portfolio';
       return;
     }
-    const flow = authFlowState;
-    const isWaiting = !!(flow && flow.status === 'waiting');
-    const isExpired = !!(flow && flow.status === 'expired');
-    const hasCode = !!(flow && flow.userCode);
-
     app.innerHTML = `
       <a class="back-link" href="#/">\u2190 Markets</a>
       <div class="auth-panel">
         <h2>Sign in with GitHub</h2>
-        <p>Authorize with GitHub device flow. On first login, Futarchy creates your account from your GitHub identity and credits it with 100 play-money credits.</p>
-        ${hasCode ? `
-          <div class="device-card">
-            <div class="device-label">One-time code</div>
-            <span class="device-code">${esc(flow.userCode)}</span>
-            <div class="device-actions">
-              <button class="btn-secondary" id="copy-code-btn">Copy code</button>
-              <a href="${esc(flow.verificationUri)}" target="_blank" rel="noopener">Open GitHub verification page</a>
-            </div>
-          </div>
-        ` : ''}
-        <div class="device-actions">
-          <button class="btn-primary" id="device-login-btn">${hasCode ? 'Restart sign-in' : 'Sign in with GitHub'}</button>
-          ${isExpired ? '<button class="btn-secondary" id="retry-login-btn">Try again</button>' : ''}
-        </div>
-        <div class="status ${isWaiting ? 'waiting' : flow && flow.status === 'error' ? 'error' : ''}" id="device-feedback">
-          ${isWaiting ? '<span class="spinner" aria-hidden="true"></span>' : ''}
-          <span>${esc(flow && flow.message ? flow.message : 'Click the button to start GitHub sign-in.')}</span>
+        <p>Use standard GitHub OAuth. On first login, Futarchy creates your account from your GitHub identity and credits it with 100 play-money credits.</p>
+        <div class="auth-actions">
+          <a class="btn-primary" href="${githubLoginUrl}">Sign in with GitHub</a>
+          <a class="btn-secondary" href="#/">Back to markets</a>
         </div>
       </div>
     `;
-    const startBtn = document.getElementById('device-login-btn');
-    const retryBtn = document.getElementById('retry-login-btn');
-    const copyBtn = document.getElementById('copy-code-btn');
-
-    function scheduleDevicePoll(delayMs) {
-      clearAuthPolling();
-      authPollTimer = setTimeout(pollDeviceFlow, delayMs);
-    }
-
-    async function startDeviceFlow() {
-      clearAuthPolling();
-      authFlowState = { status: 'waiting', message: 'Requesting GitHub device code...' };
-      renderAuthPanel();
-      try {
-        const result = await requestJson('/auth/device', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        });
-        if (!result.resp.ok) {
-          authFlowState = {
-            status: 'error',
-            message: getErrorMessage(result.data, 'Failed to start GitHub sign-in.'),
-          };
-          renderAuthPanel();
-          return;
-        }
-        authFlowState = {
-          deviceCode: result.data.device_code,
-          userCode: result.data.user_code,
-          verificationUri: result.data.verification_uri,
-          intervalMs: (result.data.interval || 5) * 1000,
-          expiresAt: Date.now() + ((result.data.expires_in || 900) * 1000),
-          status: 'waiting',
-          message: 'Waiting for GitHub authorization...',
-        };
-        renderAuthPanel();
-        scheduleDevicePoll(authFlowState.intervalMs);
-      } catch (e) {
-        authFlowState = { status: 'error', message: e.message || 'Network error. Try again.' };
-        renderAuthPanel();
-      }
-    }
-
-    async function pollDeviceFlow() {
-      if (!authFlowState || !authFlowState.deviceCode) return;
-      if (Date.now() >= authFlowState.expiresAt) {
-        authFlowState = { status: 'expired', message: 'Code expired. Try again.' };
-        renderAuthPanel();
-        return;
-      }
-
-      try {
-        const result = await requestJson('/auth/device/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ device_code: authFlowState.deviceCode }),
-        });
-
-        if (result.resp.status === 202) {
-          authFlowState.message = 'Waiting for GitHub authorization...';
-          renderAuthPanel();
-          scheduleDevicePoll(authFlowState.intervalMs);
-          return;
-        }
-
-        if (result.resp.status === 410) {
-          authFlowState = { status: 'expired', message: 'Code expired. Try again.' };
-          renderAuthPanel();
-          return;
-        }
-
-        if (!result.resp.ok) {
-          authFlowState = {
-            status: 'error',
-            message: getErrorMessage(result.data, 'GitHub sign-in failed.'),
-          };
-          renderAuthPanel();
-          return;
-        }
-
-        setAuth(result.data.api_key, result.data.github_login, result.data.account_id);
-        authFlowState = null;
-        renderAuthBar();
-        location.hash = '#/';
-      } catch (e) {
-        authFlowState = { status: 'error', message: e.message || 'Network error. Try again.' };
-        renderAuthPanel();
-      }
-    }
-
-    if (startBtn) startBtn.onclick = startDeviceFlow;
-    if (retryBtn) retryBtn.onclick = startDeviceFlow;
-    if (copyBtn) {
-      copyBtn.onclick = async () => {
-        if (!flow || !flow.userCode) return;
-        try {
-          await navigator.clipboard.writeText(flow.userCode);
-          authFlowState.message = 'Code copied. Finish authorization on GitHub.';
-        } catch (_) {
-          authFlowState.message = 'Copy failed. Copy the code manually.';
-        }
-        renderAuthPanel();
-        if (authFlowState && authFlowState.status === 'waiting') {
-          scheduleDevicePoll(authFlowState.intervalMs);
-        }
-      };
-    }
-    if (isWaiting && flow && flow.deviceCode && !authPollTimer) {
-      scheduleDevicePoll(flow.intervalMs);
-    }
   }
 
   // --- Portfolio View ---
@@ -947,7 +812,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
         if (!auth) {
           tradePanel = `<div class="trade-panel">
             <div class="section-title">Trade</div>
-            <div class="login-prompt"><a href="#/auth">Sign in with GitHub</a> to start trading on this market.</div>
+            <div class="login-prompt"><a href="${githubLoginUrl}">Sign in with GitHub</a> to start trading on this market.</div>
           </div>`;
         } else {
           // Find user's positions for sell limits
@@ -1278,6 +1143,7 @@ details.lmsr-ref .ref-content p { margin: 4px 0; }
   }
 
   window.addEventListener('hashchange', route);
+  consumeAuthFragment();
   renderAuthBar();
   route();
 })();

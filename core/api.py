@@ -12,13 +12,16 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urlencode
 
+import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from core.api_errors import APIError, api_error_handler, translate_engine_error
 from core.api_models import (
@@ -54,7 +57,17 @@ logger = logging.getLogger(__name__)
 STATE_PATH = os.environ.get("FUTARCHY_STATE", "./futarchy_state.json")
 INITIAL_CREDITS = Decimal(os.environ.get("INITIAL_CREDITS", "100"))
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 TREASURY_ACCOUNT_ID = os.environ.get("FUTARCHY_TREASURY_ID", "")
+GITHUB_OAUTH_REDIRECT_URI = os.environ.get(
+    "GITHUB_OAUTH_REDIRECT_URI",
+    "https://api.futarchy.ai/v1/auth/callback",
+)
+DASHBOARD_URL = os.environ.get(
+    "FUTARCHY_DASHBOARD_URL",
+    "https://api.futarchy.ai/dashboard",
+)
+GITHUB_OAUTH_STATE_TTL = timedelta(minutes=10)
 
 # Liquidity settings (matching pr-market.yml defaults)
 LIQUIDITY_INITIAL = os.environ.get("LIQUIDITY_INITIAL", "40")
@@ -83,6 +96,7 @@ async def lifespan(app: FastAPI):
     app.state.me = me
     app.state.auth_store = auth_store or AuthStore()
     app.state.tracked_repos = tracked_repos
+    app.state.github_oauth_states = {}
     app.state.lock = asyncio.Lock()
     await _reconcile_expired_markets_once()
 
@@ -111,6 +125,78 @@ def _save():
     save_snapshot(app.state.risk, app.state.me, STATE_PATH,
                   auth_store=app.state.auth_store,
                   tracked_repos=app.state.tracked_repos)
+
+
+def _github_oauth_states() -> dict[str, datetime]:
+    states = getattr(app.state, "github_oauth_states", None)
+    if states is None:
+        states = {}
+        app.state.github_oauth_states = states
+    return states
+
+
+def _prune_github_oauth_states(now: datetime | None = None) -> None:
+    current = now or datetime.now(timezone.utc)
+    cutoff = current - GITHUB_OAUTH_STATE_TTL
+    states = _github_oauth_states()
+    expired = [
+        state
+        for state, created_at in states.items()
+        if created_at <= cutoff
+    ]
+    for state in expired:
+        states.pop(state, None)
+
+
+async def _exchange_github_oauth_code(code: str) -> str:
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": GITHUB_CLIENT_ID,
+                "client_secret": GITHUB_CLIENT_SECRET,
+                "code": code,
+            },
+            headers={"Accept": "application/json"},
+            timeout=10.0,
+        )
+
+    if resp.status_code != 200:
+        raise ValueError(f"github_api_error:{resp.status_code}")
+
+    data = resp.json()
+    if "error" in data:
+        raise ValueError(f"github_api_error:{data['error']}")
+
+    access_token = data.get("access_token")
+    if not access_token:
+        raise ValueError("github_api_error:missing_access_token")
+
+    return access_token
+
+
+async def _authenticate_github_identity(gh: dict) -> AuthResponse:
+    async with app.state.lock:
+        auth_store = app.state.auth_store
+        existing = auth_store.get_by_github_id(gh["id"])
+
+        if existing:
+            user, raw_key = auth_store.create_user(
+                gh["id"], gh["login"], existing.account_id)
+        else:
+            acc = app.state.risk.create_account()
+            if INITIAL_CREDITS > ZERO:
+                app.state.risk.mint(acc.id, INITIAL_CREDITS)
+            user, raw_key = auth_store.create_user(
+                gh["id"], gh["login"], acc.id)
+
+        _save()
+
+    return AuthResponse(
+        api_key=raw_key,
+        account_id=user.account_id,
+        github_login=user.github_login,
+    )
 
 
 def _parse_deadline(deadline: str | None) -> datetime | None:
@@ -230,29 +316,71 @@ async def auth_github(req: GitHubAuthRequest) -> AuthResponse:
         raise APIError(502, "github_api_error",
                        f"GitHub API error: {code}")
 
+    return await _authenticate_github_identity(gh)
+
+
+@app.get("/v1/auth/github/login")
+async def auth_github_login() -> RedirectResponse:
+    """Start GitHub OAuth web flow."""
+    if not GITHUB_CLIENT_ID:
+        raise APIError(501, "github_oauth_unavailable",
+                       "GITHUB_CLIENT_ID not configured")
+
+    state = secrets.token_urlsafe(32)
     async with app.state.lock:
-        auth_store = app.state.auth_store
-        existing = auth_store.get_by_github_id(gh["id"])
+        _prune_github_oauth_states()
+        _github_oauth_states()[state] = datetime.now(timezone.utc)
 
-        if existing:
-            # Re-auth: rotate key, same account
-            user, raw_key = auth_store.create_user(
-                gh["id"], gh["login"], existing.account_id)
-        else:
-            # New user: create account, mint initial credits
-            acc = app.state.risk.create_account()
-            if INITIAL_CREDITS > ZERO:
-                app.state.risk.mint(acc.id, INITIAL_CREDITS)
-            user, raw_key = auth_store.create_user(
-                gh["id"], gh["login"], acc.id)
-
-        _save()
-
-    return AuthResponse(
-        api_key=raw_key,
-        account_id=user.account_id,
-        github_login=user.github_login,
+    params = urlencode({
+        "client_id": GITHUB_CLIENT_ID,
+        "redirect_uri": GITHUB_OAUTH_REDIRECT_URI,
+        "scope": "read:user",
+        "state": state,
+    })
+    return RedirectResponse(
+        url=f"https://github.com/login/oauth/authorize?{params}",
+        status_code=302,
     )
+
+
+@app.get("/v1/auth/callback")
+async def auth_github_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    """Finish GitHub OAuth web flow and redirect to the dashboard."""
+    if error:
+        raise APIError(400, "github_oauth_denied",
+                       f"GitHub authorization failed: {error}")
+    if not code or not state:
+        raise APIError(400, "github_oauth_invalid_request",
+                       "Missing OAuth code or state")
+    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
+        raise APIError(501, "github_oauth_unavailable",
+                       "GitHub OAuth not fully configured")
+
+    async with app.state.lock:
+        _prune_github_oauth_states()
+        issued_at = _github_oauth_states().pop(state, None)
+
+    if issued_at is None:
+        raise APIError(400, "github_oauth_invalid_state",
+                       "Invalid or expired OAuth state")
+
+    try:
+        access_token = await _exchange_github_oauth_code(code)
+        gh = await validate_github_token(access_token)
+    except ValueError as e:
+        raise APIError(502, "github_api_error", str(e))
+
+    auth = await _authenticate_github_identity(gh)
+    fragment = urlencode({
+        "auth": auth.api_key,
+        "account_id": auth.account_id,
+        "login": auth.github_login,
+    })
+    return RedirectResponse(url=f"{DASHBOARD_URL}#{fragment}", status_code=302)
 
 
 @app.post("/v1/auth/device")
@@ -302,27 +430,7 @@ async def auth_device_poll(req: DeviceFlowPollRequest) -> AuthResponse:
         raise APIError(502, "github_api_error",
                        "Failed to validate GitHub access token")
 
-    async with app.state.lock:
-        auth_store = app.state.auth_store
-        existing = auth_store.get_by_github_id(gh["id"])
-
-        if existing:
-            user, raw_key = auth_store.create_user(
-                gh["id"], gh["login"], existing.account_id)
-        else:
-            acc = app.state.risk.create_account()
-            if INITIAL_CREDITS > ZERO:
-                app.state.risk.mint(acc.id, INITIAL_CREDITS)
-            user, raw_key = auth_store.create_user(
-                gh["id"], gh["login"], acc.id)
-
-        _save()
-
-    return AuthResponse(
-        api_key=raw_key,
-        account_id=user.account_id,
-        github_login=user.github_login,
-    )
+    return await _authenticate_github_identity(gh)
 
 
 # ---------------------------------------------------------------------------

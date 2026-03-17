@@ -17,6 +17,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -47,6 +48,7 @@ async def client():
     app.state.me = MarketEngine(app.state.risk)
     app.state.auth_store = AuthStore()
     app.state.tracked_repos = {}
+    app.state.github_oauth_states = {}
     app.state.lock = asyncio.Lock()
 
     # Reset rate limiter
@@ -101,7 +103,8 @@ class TestHealth:
 
         await _mock_auth(client, github_id=1, login="alice")
 
-        resp = await client.post("/v1/auth/register",
+        resp = await client.post("/v1/admin/service-accounts",
+                                 headers=ADMIN_HEADERS,
                                  json={"username": "local-user"})
         assert resp.status_code == 200
 
@@ -213,6 +216,65 @@ class TestAuth:
         assert data["github_login"] == "octocat"
 
         me = await client.get("/v1/me", headers=_user_headers(data["api_key"]))
+        assert me.status_code == 200
+        assert me.json()["available"] == "1000"
+
+    async def test_oauth_web_login_redirects_to_github(self, client):
+        with patch("core.api.GITHUB_CLIENT_ID", "client-id"):
+            resp = await client.get("/v1/auth/github/login",
+                                    follow_redirects=False)
+        assert resp.status_code == 302
+        location = resp.headers["location"]
+        parsed = urlparse(location)
+        query = parse_qs(parsed.query)
+
+        assert location.startswith("https://github.com/login/oauth/authorize?")
+        assert query["client_id"] == ["client-id"]
+        assert query["redirect_uri"] == [
+            "https://api.futarchy.ai/v1/auth/callback"
+        ]
+        assert query["scope"] == ["read:user"]
+        assert len(query["state"][0]) > 20
+        assert query["state"][0] in app.state.github_oauth_states
+
+    async def test_oauth_callback_rejects_invalid_state(self, client):
+        with patch("core.api.GITHUB_CLIENT_ID", "client-id"), \
+                patch("core.api.GITHUB_CLIENT_SECRET", "client-secret"):
+            resp = await client.get("/v1/auth/callback",
+                                    params={"code": "oauth-code",
+                                            "state": "bad-state"})
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "github_oauth_invalid_state"
+
+    async def test_oauth_callback_creates_account_and_redirects(self, client):
+        app.state.github_oauth_states["valid-state"] = datetime.now(timezone.utc)
+        exchange_mock = AsyncMock(return_value="gho_token")
+        validate_mock = AsyncMock(return_value={"id": 88, "login": "octocat"})
+
+        with patch("core.api.GITHUB_CLIENT_ID", "client-id"), \
+                patch("core.api.GITHUB_CLIENT_SECRET", "client-secret"), \
+                patch("core.api._exchange_github_oauth_code", exchange_mock), \
+                patch("core.api.validate_github_token", validate_mock):
+            resp = await client.get("/v1/auth/callback",
+                                    params={"code": "oauth-code",
+                                            "state": "valid-state"},
+                                    follow_redirects=False)
+
+        assert resp.status_code == 302
+        location = resp.headers["location"]
+        parsed = urlparse(location)
+        fragment = parse_qs(parsed.fragment)
+
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "api.futarchy.ai"
+        assert parsed.path == "/dashboard"
+        assert fragment["account_id"] == ["1"]
+        assert fragment["login"] == ["octocat"]
+        assert "auth" in fragment
+        assert "valid-state" not in app.state.github_oauth_states
+
+        me = await client.get("/v1/me",
+                              headers=_user_headers(fragment["auth"][0]))
         assert me.status_code == 200
         assert me.json()["available"] == "1000"
 
