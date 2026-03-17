@@ -2,8 +2,8 @@
 Authentication module. GitHub OAuth identity, API key management.
 
 Two auth paths:
-1. Token exchange: POST /v1/auth/github with a GitHub PAT → validate → mint API key
-2. Device flow: standard OAuth device flow for interactive setup
+1. Browser OAuth code flow for the dashboard
+2. Device flow for CLI login
 
 One account per GitHub user ID. Re-auth rotates the API key.
 Only the sha256 hash of the API key is stored; the raw key is returned once.
@@ -116,7 +116,7 @@ async def start_device_flow(client_id: str) -> dict:
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://github.com/login/device/code",
-            data={"client_id": client_id, "scope": "read:user"},
+            data={"client_id": client_id},
             headers={"Accept": "application/json"},
             timeout=10.0,
         )

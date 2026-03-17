@@ -90,7 +90,7 @@ async def require_auth(request: Request, response: Response) -> User:
     if token == ADMIN_KEY and ADMIN_KEY:
         raise APIError(401, "invalid_api_key",
                        "Admin key cannot be used for user endpoints. "
-                       "Use a user API key from /v1/auth/github.")
+                       "Use a user API key from the dashboard or `futarchy login`.")
 
     auth_store = request.app.state.auth_store
     user = auth_store.authenticate(token)

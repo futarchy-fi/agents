@@ -8,9 +8,6 @@ from pydantic import BaseModel
 
 # --- Auth ---
 
-class GitHubAuthRequest(BaseModel):
-    github_token: str
-
 class DeviceFlowStartRequest(BaseModel):
     pass
 
