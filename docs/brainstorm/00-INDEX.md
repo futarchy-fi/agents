@@ -26,6 +26,10 @@ Detailed thinking on each idea. These are explorations, not specs. Some of this 
 - `15-trust-layer-for-ai.md` — Prediction markets as a trust/safety layer for AI skills and agents. Bug bounties through markets. The decentralized social credit score, for AIs first.
 - `16-agent-reputation-exchange.md` — Portable agent reputation from prediction market track records. The feedback loop: trade → accuracy → trust → opportunity → trade.
 
+## Futarchic Organizations
+
+- `18-futarchy-nonprofits.md` — **Futarchy Nonprofits (FNPs).** Credibly-neutral, impact-directed charitable funding. Conditional derivatives markets estimate the marginal impact of each proposal on an objective metric; donors place limit orders on impact-efficiency; winning proposals get marginal impact certificates.
+
 ## Architecture Thinking
 
 - `10-autonomous-team-architecture.md` — How an autonomous agent team might work (task model, coordination layers, agent tiers). Speculative — this is brainstorming, not a roadmap.
@@ -44,4 +48,4 @@ These are directions we're leaning toward, not final decisions:
 - **Trust layer for AI** as the most timely business opportunity
 - **Agent reputation** as the long-term moat
 
-*Last updated: 2026-03-17*
+*Last updated: 2026-06-08*
