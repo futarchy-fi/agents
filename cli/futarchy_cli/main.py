@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
+from decimal import Decimal
 
 from . import __version__
 from . import api as api_mod
@@ -176,13 +177,13 @@ def main(argv: list[str] | None = None) -> int:
     p_buy = _sub(sub, "buy", help="Buy outcome tokens")
     p_buy.add_argument("market_id", type=int, help="Market ID")
     p_buy.add_argument("outcome", choices=["yes", "no"], help="Outcome to buy")
-    p_buy.add_argument("budget", type=float, help="Amount to spend")
+    p_buy.add_argument("budget", type=Decimal, help="Amount to spend")
 
     # futarchy sell <id> <outcome> <amount>
     p_sell = _sub(sub, "sell", help="Sell outcome tokens")
     p_sell.add_argument("market_id", type=int, help="Market ID")
     p_sell.add_argument("outcome", choices=["yes", "no"], help="Outcome to sell")
-    p_sell.add_argument("amount", type=float, help="Number of tokens to sell")
+    p_sell.add_argument("amount", type=Decimal, help="Number of tokens to sell")
 
     args = parser.parse_args(argv)
 

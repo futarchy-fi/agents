@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from decimal import Decimal
 
 import httpx
 
@@ -78,14 +79,16 @@ class Client:
 
     # ── Trading endpoints ──
 
-    def buy(self, market_id: int, outcome: str, budget: float) -> dict:
+    def buy(self, market_id: int, outcome: str,
+            budget: str | Decimal | int | float) -> dict:
         return self.post(f"/v1/markets/{market_id}/buy", body={
             "outcome": outcome,
-            "budget": budget,
+            "budget": str(budget),
         })
 
-    def sell(self, market_id: int, outcome: str, amount: float) -> dict:
+    def sell(self, market_id: int, outcome: str,
+             amount: str | Decimal | int | float) -> dict:
         return self.post(f"/v1/markets/{market_id}/sell", body={
             "outcome": outcome,
-            "amount": amount,
+            "amount": str(amount),
         })
