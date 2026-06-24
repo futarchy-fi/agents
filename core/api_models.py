@@ -66,6 +66,11 @@ class AccountActivityPage(BaseModel):
     has_more: bool
     next_before_tx_id: int | None = None
 
+class CliVersionResponse(BaseModel):
+    latest_version: str
+    minimum_supported_version: str | None = None
+    update_command: str
+
 
 # --- Markets ---
 
@@ -195,6 +200,12 @@ class HealthResponse(BaseModel):
     markets: int
     ledger_accounts: int
     users: int
+
+
+class CliVersionResponse(BaseModel):
+    latest_version: str
+    minimum_supported_version: str | None = None
+    update_command: str
 
 
 # --- Tracked Repos ---
