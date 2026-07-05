@@ -45,6 +45,7 @@ from core.api_models import (
     NetOrderRequest, NetOrderPreviewResponse, NetOrderBalance,
     NetOrder, NetOrderResponse, NetOrdersList,
     NetResolveResponse, NetVoidResponse,
+    NetPortfolioResponse, LeaderboardEntry, LeaderboardResponse,
 )
 from core.auth import (
     AuthStore, validate_github_token,
@@ -753,6 +754,69 @@ async def get_market_trades(market_id: int) -> list[TradeResponse]:
 
 
 # ---------------------------------------------------------------------------
+# Leaderboard (public, no auth) — top accounts by total balance.
+# ---------------------------------------------------------------------------
+
+@app.get("/v1/leaderboard")
+async def get_leaderboard() -> LeaderboardResponse:
+    """Public top-50 accounts by total balance (available + frozen).
+
+    Excludes three account classes that would otherwise dominate or
+    pollute a "who's winning" board:
+      - every market's AMM account (``MarketEngine.create_market`` mints
+        one account per market and stores it as ``market.amm_account_id``
+        — never a real trader's account);
+      - the venue treasury, when the net venue is enabled
+        (``app.state.joint.treasury_account_id``, seeded with 1,000,000
+        credits — ``TREASURY_SEED`` in venues/joint/venue.py);
+      - service accounts, i.e. the bot/agent accounts created via
+        ``POST /v1/admin/service-accounts``. Those are the only ``User``
+        records stored in ``auth_store.local_users`` (keyed by username,
+        ``github_id=0``) rather than ``auth_store.users`` (keyed by real
+        GitHub id) — that's exactly the marker the admin endpoint already
+        relies on to tell them apart, so membership in ``local_users`` is
+        the exclusion test here too.
+
+    Logins are resolved from ``auth_store.users`` (github_id -> User): an
+    account owned by a real GitHub identity gets its login; any other
+    account still in the ranking (e.g. one created via the plain
+    ``POST /v1/admin/accounts``) gets ``null``.
+    """
+    auth_store = app.state.auth_store
+
+    async with app.state.lock:
+        excluded_ids = {
+            m.amm_account_id for m in app.state.me.markets.values()
+        }
+        joint = getattr(app.state, "joint", None)
+        if joint is not None:
+            excluded_ids.add(joint.treasury_account_id)
+        excluded_ids |= {
+            u.account_id for u in auth_store.local_users.values()
+        }
+
+        login_by_account = {
+            u.account_id: u.github_login for u in auth_store.users.values()
+        }
+
+        ranked = sorted(
+            (acc for acc in app.state.risk.accounts.values()
+             if acc.id not in excluded_ids),
+            key=lambda a: a.total,
+            reverse=True,
+        )[:50]
+        entries = [
+            LeaderboardEntry(
+                login=login_by_account.get(acc.id),
+                accountId=acc.id,
+                total=str(acc.total),
+            )
+            for acc in ranked
+        ]
+    return LeaderboardResponse(entries=entries)
+
+
+# ---------------------------------------------------------------------------
 # Net venue (Plan B: joint/factored market) read routes — public, no auth.
 # ---------------------------------------------------------------------------
 
@@ -1006,6 +1070,39 @@ async def void_net_market(market_id: str, _: AdminDep) -> NetVoidResponse:
 # ---------------------------------------------------------------------------
 # User endpoints (API key required)
 # ---------------------------------------------------------------------------
+
+@app.get("/v1/me/net")
+async def get_my_net_portfolio(user: AuthUser) -> NetPortfolioResponse:
+    """The caller's net-venue portfolio: own orders, open stake, settled pnl.
+
+    Deliberately does NOT 503 when the venue is disabled, unlike every
+    other ``/v1/net/*`` route (see ``_require_joint``) — this is an
+    account/portfolio route, not a venue-market route, and
+    planB-constraints.md's 503 rule is scoped to the latter. A trader's
+    "me" page should render an empty portfolio when the venue is off,
+    not break.
+    """
+    joint = getattr(app.state, "joint", None)
+    if joint is None:
+        return NetPortfolioResponse(orders=[], openStake="0", settledPnl="0")
+
+    async with app.state.lock:
+        # Same accountId-filter-before-copy discipline as /v1/net/orders/mine.
+        mine = [o for o in joint._orders if o["accountId"] == user.account_id]
+        orders = [_to_net_order(o) for o in reversed(mine)]
+        open_stake = sum(
+            (Decimal(o["stake"]) for o in mine
+             if o["status"] in ("open", "awaiting_context")),
+            ZERO,
+        )
+        settled_pnl = sum(
+            (Decimal(o["payout"]) for o in mine if o["status"] == "settled"),
+            ZERO,
+        )
+    return NetPortfolioResponse(
+        orders=orders, openStake=str(open_stake), settledPnl=str(settled_pnl),
+    )
+
 
 @app.get("/v1/me")
 async def get_me(user: AuthUser) -> AccountResponse:

@@ -285,6 +285,29 @@ class NetOrdersList(BaseModel):
     orders: list[NetOrder]
 
 
+class NetPortfolioResponse(BaseModel):
+    """The caller's net-venue portfolio: own orders plus aggregate stake/pnl.
+
+    Unlike every other ``/v1/net/*`` route, ``GET /v1/me/net`` never 503s
+    when the venue is disabled — it returns this same empty shape instead
+    (see the route docstring in core/api.py for why)."""
+    orders: list[NetOrder]
+    openStake: str
+    settledPnl: str
+
+
+# --- Leaderboard (public) ---
+
+class LeaderboardEntry(BaseModel):
+    login: str | None
+    accountId: int
+    total: str
+
+
+class LeaderboardResponse(BaseModel):
+    entries: list[LeaderboardEntry]
+
+
 class HealthResponse(BaseModel):
     status: str
     markets: int
