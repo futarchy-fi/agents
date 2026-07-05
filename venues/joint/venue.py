@@ -710,6 +710,21 @@ class JointVenue:
 
         return venue
 
+    # -- public order accessors -------------------------------------------
+
+    def orders_count(self) -> int:
+        """Total number of orders ever placed on this venue (any status)."""
+        return len(self._orders)
+
+    def orders_for(self, account_id: int) -> list[dict[str, Any]]:
+        """``account_id``'s orders, oldest-first (placement/append order).
+
+        Returns the INTERNAL order dicts, not copies (same as the
+        ``joint._orders`` reach-in this replaces) — a caller that intends
+        to mutate an entry must copy it first.
+        """
+        return [order for order in self._orders if order["accountId"] == account_id]
+
     # -- internal bookkeeping --------------------------------------------
 
     def _vb_lock_market_id(self, variable_id: str) -> int:

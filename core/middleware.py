@@ -3,6 +3,7 @@ Auth dependencies, rate limiting, CORS, and body-size hardening middleware.
 """
 
 import os
+import secrets
 import time
 from typing import Annotated
 
@@ -73,6 +74,19 @@ def _get_bearer_token(request: Request) -> str | None:
     return None
 
 
+def _is_admin_key(token: str) -> bool:
+    """Constant-time compare of ``token`` against ``ADMIN_KEY``.
+
+    Fails closed when ``ADMIN_KEY`` is unset: an empty configured key never
+    matches, regardless of ``token`` (``secrets.compare_digest`` alone
+    would happily return True for two empty strings, which is why the
+    ``ADMIN_KEY`` truthiness check comes first).
+    """
+    return bool(ADMIN_KEY) and secrets.compare_digest(
+        token.encode("utf-8"), ADMIN_KEY.encode("utf-8")
+    )
+
+
 async def optional_auth(request: Request) -> User | None:
     """Return authenticated user or None. No error on missing auth."""
     token = _get_bearer_token(request)
@@ -89,7 +103,7 @@ async def require_auth(request: Request, response: Response) -> User:
         raise APIError(401, "auth_required", "Authorization header required")
 
     # Check if it's the admin key (admin can also use auth endpoints)
-    if token == ADMIN_KEY and ADMIN_KEY:
+    if _is_admin_key(token):
         raise APIError(401, "invalid_api_key",
                        "Admin key cannot be used for user endpoints. "
                        "Use a user API key from the dashboard or `futarchy login`.")
@@ -117,7 +131,7 @@ async def require_admin(request: Request) -> None:
     token = _get_bearer_token(request)
     if not token:
         raise APIError(401, "auth_required", "Authorization header required")
-    if token != ADMIN_KEY:
+    if not _is_admin_key(token):
         raise APIError(403, "admin_required", "Admin API key required")
 
 

@@ -479,7 +479,7 @@ async def health() -> HealthResponse:
         ),
         net=NetHealth(
             markets=len(joint.market_ids()) if joint is not None else 0,
-            orders=len(joint._orders) if joint is not None else 0,
+            orders=joint.orders_count() if joint is not None else 0,
             enabled=joint is not None,
         ),
     )
@@ -1026,12 +1026,10 @@ async def list_my_net_orders(user: AuthUser) -> NetOrdersList:
     """The caller's own net-venue orders, newest-first."""
     joint = _require_joint()
     async with app.state.lock:
-        # joint._orders is append-order (oldest first); no public accessor
-        # exists yet (matches the existing joint._orders reach-in used by
-        # the health endpoint above). Filtered by accountId == the caller's
-        # own before any copy is made, so another account's order is never
+        # orders_for() already filters by accountId == the caller's own
+        # before any copy is made, so another account's order is never
         # even converted to a response model.
-        mine = [o for o in joint._orders if o["accountId"] == user.account_id]
+        mine = joint.orders_for(user.account_id)
     orders = [_to_net_order(o) for o in reversed(mine)]
     return NetOrdersList(orders=orders)
 
@@ -1112,7 +1110,7 @@ async def get_my_net_portfolio(user: AuthUser) -> NetPortfolioResponse:
 
     async with app.state.lock:
         # Same accountId-filter-before-copy discipline as /v1/net/orders/mine.
-        mine = [o for o in joint._orders if o["accountId"] == user.account_id]
+        mine = joint.orders_for(user.account_id)
         orders = [_to_net_order(o) for o in reversed(mine)]
         open_stake = sum(
             (Decimal(o["stake"]) for o in mine

@@ -50,13 +50,18 @@ def file_lock(path):
 
 
 def load_or_create(path):
+    """Returns (risk, me, venues). ``venues`` is the raw loaded venues
+    section (or {} for a fresh state) — threaded through to ``main()`` so a
+    mutating command's ``save_snapshot`` call passes it back unchanged
+    instead of silently wiping out any net-venue state a prior API/CLI
+    session persisted (the CLI itself never runs a live venue object)."""
     if os.path.exists(path):
-        risk, me, _auth, _repos, _venues = load_snapshot(path)
-        return risk, me
+        risk, me, _auth, _repos, venues = load_snapshot(path)
+        return risk, me, venues
     reset_counters()
     risk = RiskEngine()
     me = MarketEngine(risk)
-    return risk, me
+    return risk, me, {}
 
 
 def reply(data):
@@ -238,11 +243,11 @@ def main():
 
     try:
         with file_lock(state_path):
-            risk, me = load_or_create(state_path)
+            risk, me, venues = load_or_create(state_path)
             result = commands[args.command](risk, me, args)
 
             if args.command in MUTATING:
-                save_snapshot(risk, me, state_path)
+                save_snapshot(risk, me, state_path, venues=venues)
 
             reply(result)
     except Exception as e:

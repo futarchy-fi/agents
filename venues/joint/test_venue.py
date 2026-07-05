@@ -148,6 +148,26 @@ def test_market_ids_returns_the_same_cached_list_object():
     assert venue.market_ids() == ["g1", "g2"]
 
 
+def test_orders_count_and_orders_for_public_accessors():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    acc1 = _fund(engine, Decimal("1000"))
+    acc2 = _fund(engine, Decimal("1000"))
+
+    assert venue.orders_count() == 0
+    assert venue.orders_for(acc1) == []
+
+    order1 = venue.place_edit(acc1, "gcx_a", "yes", 0.7)
+    order2 = venue.place_edit(acc2, "gcx_a", "yes", 0.75)
+    order3 = venue.place_edit(acc1, "gcx_b", "yes", 0.5)
+
+    assert venue.orders_count() == 3
+    assert [o["orderId"] for o in venue.orders_for(acc1)] == [
+        order1["orderId"], order3["orderId"],
+    ]
+    assert [o["orderId"] for o in venue.orders_for(acc2)] == [order2["orderId"]]
+
+
 # -- place_edit / preview_edit ------------------------------------------
 
 
