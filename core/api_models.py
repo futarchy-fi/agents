@@ -190,11 +190,18 @@ class AddLiquidityResponse(BaseModel):
 class UpdateMetadataRequest(BaseModel):
     metadata: dict
 
+class NetHealth(BaseModel):
+    markets: int
+    orders: int
+    enabled: bool
+
+
 class HealthResponse(BaseModel):
     status: str
     markets: int
     ledger_accounts: int
     users: int
+    net: NetHealth
 
 
 # --- Tracked Repos ---

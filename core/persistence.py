@@ -204,7 +204,8 @@ def _apply_migrations(state: dict) -> dict:
 def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
                   path: str, auth_store=None,
                   tracked_repos: dict | None = None,
-                  joint_venue=None) -> None:
+                  joint_venue=None,
+                  venues: dict | None = None) -> None:
     """
     Save complete RE + ME + auth + tracked_repos + venues state to a JSON file.
     Atomic: writes to .tmp then renames.
@@ -212,9 +213,23 @@ def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
     ``joint_venue``, if given, is a ``venues.joint.venue.JointVenue`` whose
     ``.snapshot()`` is stored under ``state["venues"]["joint"]``. Other venues
     can add themselves to the same section the same way without touching
-    this function's signature further (a ``venues: dict | None`` mapping
-    would be the next step if a second venue shows up).
+    this function's signature further.
+
+    ``venues``, if given (and ``joint_venue`` is None), is written through
+    unchanged as the whole ``state["venues"]`` section. This is the
+    no-erase passthrough: a caller that loaded a snapshot whose venues
+    section was non-empty but currently has no live venue object (e.g. the
+    venue is disabled this run) passes the raw loaded ``venues`` dict back
+    here so a save doesn't silently wipe out that section. If neither
+    ``joint_venue`` nor ``venues`` is given, the section is written empty.
     """
+    if joint_venue is not None:
+        venues_section = {"joint": joint_venue.snapshot()}
+    elif venues is not None:
+        venues_section = venues
+    else:
+        venues_section = {}
+
     state = {
         "version": CURRENT_VERSION,
         "counters": dict(_counters),
@@ -226,9 +241,7 @@ def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
             slug: _serialize(repo)
             for slug, repo in (tracked_repos or {}).items()
         },
-        "venues": (
-            {"joint": joint_venue.snapshot()} if joint_venue is not None else {}
-        ),
+        "venues": venues_section,
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:

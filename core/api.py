@@ -35,7 +35,7 @@ from core.api_models import (
     CreateServiceAccountRequest, CreateServiceAccountResponse,
     MintRequest, MintResponse,
     CreateMarketRequest, CreateMarketResponse,
-    ResolveRequest, HealthResponse,
+    ResolveRequest, HealthResponse, NetHealth,
     AddLiquidityRequest, AddLiquidityResponse,
     UpdateMetadataRequest,
     AddRepoRequest, TrackedRepoResponse, WebhookResponse,
@@ -50,12 +50,13 @@ from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
 from core.models import ZERO, TrackedRepo, reset_counters
 from core.persistence import save_snapshot, load_snapshot
 from core.risk_engine import RiskEngine, InsufficientBalance
+from venues.joint.venue import JointVenue, VenueError
 
 logger = logging.getLogger(__name__)
 
 
 STATE_PATH = os.environ.get("FUTARCHY_STATE", "./futarchy_state.json")
-INITIAL_CREDITS = Decimal(os.environ.get("INITIAL_CREDITS", "100"))
+INITIAL_CREDITS = Decimal(os.environ.get("INITIAL_CREDITS", "1000"))
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 TREASURY_ACCOUNT_ID = os.environ.get("FUTARCHY_TREASURY_ID", "")
@@ -80,22 +81,53 @@ MARKET_EXPIRY_CHECK_INTERVAL_SECONDS = float(
 )
 
 
+def _build_joint_venue(risk: RiskEngine, seeds_path: str, joint_data: dict | None):
+    """Restore the joint venue from a persisted snapshot, or build it fresh.
+
+    ``joint_data`` is ``venues.get("joint")`` from ``load_snapshot`` — None
+    on a fresh boot (no prior snapshot, or the venue was never enabled).
+    """
+    if joint_data is not None:
+        return JointVenue.from_snapshot(joint_data, risk, seeds_path)
+    return JointVenue(
+        risk,
+        seeds_path,
+        liquidity=Decimal(os.environ.get("JOINT_LIQUIDITY", "50")),
+        max_width=int(os.environ.get("JOINT_MAX_WIDTH", "8")),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load state
     if os.path.exists(STATE_PATH):
-        risk, me, auth_store, tracked_repos, _venues = load_snapshot(STATE_PATH)
+        risk, me, auth_store, tracked_repos, venues = load_snapshot(STATE_PATH)
     else:
         reset_counters()
         risk = RiskEngine()
         me = MarketEngine(risk)
         auth_store = AuthStore()
         tracked_repos = {}
+        venues = {}
 
     app.state.risk = risk
     app.state.me = me
     app.state.auth_store = auth_store or AuthStore()
     app.state.tracked_repos = tracked_repos
+    # Raw venues section as loaded from disk (or {} on a fresh boot). Kept
+    # around so _save() can pass it through unchanged when app.state.joint
+    # is None but the section wasn't empty — see save_snapshot's
+    # ``venues`` passthrough kwarg. Not touched once app.state.joint takes
+    # over persisting its own section.
+    app.state.venues = venues
+
+    seeds_path = os.environ.get("EXCHANGE_SEEDS_PATH")
+    app.state.joint = (
+        _build_joint_venue(risk, seeds_path, venues.get("joint"))
+        if seeds_path
+        else None
+    )
+
     app.state.github_oauth_states = {}
     app.state.lock = asyncio.Lock()
     await _reconcile_expired_markets_once()
@@ -121,10 +153,18 @@ app.add_exception_handler(APIError, api_error_handler)
 
 
 def _save():
-    """Save state to disk. Called after every mutation."""
+    """Save state to disk. Called after every mutation.
+
+    ``joint_venue=app.state.joint`` whenever a venue is live; otherwise the
+    raw ``venues`` section loaded at startup is passed through unchanged so
+    a save with the venue disabled never erases previously-persisted venue
+    state (see save_snapshot's ``venues`` kwarg).
+    """
     save_snapshot(app.state.risk, app.state.me, STATE_PATH,
                   auth_store=app.state.auth_store,
-                  tracked_repos=app.state.tracked_repos)
+                  tracked_repos=app.state.tracked_repos,
+                  joint_venue=app.state.joint,
+                  venues=getattr(app.state, "venues", None))
 
 
 def _outcome_from_reason(reason: str) -> str | None:
@@ -400,6 +440,7 @@ async def install_script():
 @app.get("/v1/health")
 async def health() -> HealthResponse:
     auth_store = app.state.auth_store
+    joint = getattr(app.state, "joint", None)
     return HealthResponse(
         status="ok",
         markets=len(app.state.me.markets),
@@ -407,6 +448,11 @@ async def health() -> HealthResponse:
         users=(
             len(auth_store.users) +
             len(getattr(auth_store, "local_users", {}))
+        ),
+        net=NetHealth(
+            markets=len(joint.market_ids()) if joint is not None else 0,
+            orders=len(joint._orders) if joint is not None else 0,
+            enabled=joint is not None,
         ),
     )
 

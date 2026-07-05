@@ -50,6 +50,8 @@ async def client():
     app.state.tracked_repos = {}
     app.state.github_oauth_states = {}
     app.state.lock = asyncio.Lock()
+    app.state.joint = None
+    app.state.venues = {}
 
     # Reset rate limiter
     rate_limiter.buckets.clear()
