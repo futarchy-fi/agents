@@ -1,15 +1,26 @@
-# Reference Caddyfile for api.futarchy.ai
+# Caddyfile for api.futarchy.ai (VM: futarchy-exchange)
 #
 # Install on server:
 #   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
+#
+# Cloudflare-proxied (orange cloud), zone SSL/TLS mode "full": Caddy serves
+# HTTPS on :443 with an internal self-signed cert; Cloudflare connects over
+# HTTPS to the origin without validating that cert. Public-GET rate limiting
+# is enforced at the Cloudflare edge (see deploy/README / I1). Only the
+# api.futarchy.ai vhost is served, so a direct hit on the raw origin IP gets
+# no matching site and is refused.
 
 api.futarchy.ai {
-    handle /hooks/* {
-        reverse_proxy 127.0.0.1:9000
-    }
+	tls internal
+	encode gzip
 
-    handle {
-        reverse_proxy 127.0.0.1:8000
-    }
+	# GitHub CD webhook listener (wired in Plan C5). Harmless 502 until it runs.
+	handle /hooks/* {
+		reverse_proxy 127.0.0.1:9000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8000
+	}
 }

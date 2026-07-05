@@ -1,0 +1,35 @@
+# Futarchy Exchange API — systemd unit (VM: futarchy-exchange, api.futarchy.ai)
+#
+# Install:
+#   sudo cp deploy/futarchy-exchange.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now futarchy-exchange
+#
+# Secrets (GITHUB_CLIENT_SECRET, FUTARCHY_ADMIN_KEY, ...) live only in
+# /etc/futarchy/exchange.env (600 root) — never in the repo.
+
+[Unit]
+Description=Futarchy Exchange API (uvicorn core.api:app)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=futarchy
+Group=futarchy
+WorkingDirectory=/opt/futarchy/agents
+EnvironmentFile=/etc/futarchy/exchange.env
+ExecStart=/opt/futarchy/agents/.venv/bin/uvicorn core.api:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+# Hardening. The app only writes the state snapshot (STATE_PATH and its
+# .tmp sibling) under /opt/futarchy/data — everything else is read-only.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/futarchy/data
+
+[Install]
+WantedBy=multi-user.target

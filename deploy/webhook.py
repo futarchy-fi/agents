@@ -4,8 +4,15 @@
 Stdlib only — no pip dependencies. Survives broken venvs so it can
 accept the push that fixes them.
 
-Reads GITHUB_WEBHOOK_SECRET from the environment (set via
-/etc/futarchy-webhook.env in the systemd unit).
+Reads from the environment (set via the systemd unit's EnvironmentFile):
+  GITHUB_WEBHOOK_SECRET  - required; HMAC secret shared with GitHub.
+  DEPLOY_REF             - branch ref to act on (default refs/heads/main).
+  DEPLOY_SCRIPT          - deploy script to run (default deploy/deploy.sh
+                           next to this file).
+
+This one listener serves both deployments: the bayes/main instance runs it
+with the defaults, and the exchange instance runs it with
+DEPLOY_REF=refs/heads/exchange-v2 and DEPLOY_SCRIPT=.../exchange-deploy.sh.
 
 Listens on 127.0.0.1:9000.  Caddy reverse-proxies /hooks/* here.
 """
@@ -20,7 +27,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 BIND = "127.0.0.1"
 PORT = 9000
-DEPLOY_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.sh")
+_DEFAULT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.sh")
+DEPLOY_SCRIPT = os.environ.get("DEPLOY_SCRIPT", _DEFAULT_SCRIPT)
+DEPLOY_REF = os.environ.get("DEPLOY_REF", "refs/heads/main")
 
 
 def verify_signature(secret: bytes, payload: bytes, signature: str) -> bool:
@@ -54,7 +63,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         ref = body.get("ref", "")
-        if ref != "refs/heads/main":
+        if ref != DEPLOY_REF:
             self._respond(200, {"status": "ignored", "ref": ref})
             return
 

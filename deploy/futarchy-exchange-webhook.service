@@ -1,0 +1,30 @@
+# GitHub CD webhook listener for the exchange (branch exchange-v2).
+#
+# Install:
+#   sudo cp deploy/futarchy-exchange-webhook.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now futarchy-exchange-webhook
+#
+# Requires /etc/futarchy/exchange-webhook.env (600 root) with:
+#   GITHUB_WEBHOOK_SECRET=<random>
+#   DEPLOY_REF=refs/heads/exchange-v2
+#   DEPLOY_SCRIPT=/opt/futarchy/agents/deploy/exchange-deploy.sh
+# and a sudoers rule (/etc/sudoers.d/futarchy-exchange) granting `futarchy`
+# NOPASSWD on: /usr/bin/systemctl restart futarchy-exchange.service
+
+[Unit]
+Description=Futarchy Exchange CD webhook (exchange-v2 -> futarchy-exchange.service)
+After=network.target
+
+[Service]
+Type=simple
+User=futarchy
+Group=futarchy
+WorkingDirectory=/opt/futarchy/agents/deploy
+EnvironmentFile=/etc/futarchy/exchange-webhook.env
+ExecStart=/usr/bin/python3 /opt/futarchy/agents/deploy/webhook.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
