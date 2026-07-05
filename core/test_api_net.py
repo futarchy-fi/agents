@@ -29,7 +29,7 @@ import core.api as api_module
 from core.api import app
 from core.models import reset_counters
 from core.persistence import load_snapshot
-from venues.joint.test_venue import TINY_SEEDS
+from venues.joint.test_venue import TINY_SEEDS, THREE_VAR_SEEDS
 
 ADMIN_HEADERS = {"Authorization": "Bearer test-admin-key"}
 
@@ -289,6 +289,24 @@ class TestNetMarginal:
             resp = await _get("/v1/net/marginal?variable=gcx_b&context=gcx_a%3Dyes")
             assert resp.status_code == 409
             assert resp.json()["error"]["code"] == "context_contradicted"
+
+    async def test_marginal_multi_variable_context(self, tmp_path, monkeypatch):
+        reset_counters()
+        # Write THREE_VAR_SEEDS (includes independent gcx_c) to tmp file.
+        path = tmp_path / "seeds.json"
+        path.write_text(json.dumps(THREE_VAR_SEEDS))
+        seeds_path = str(path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            # Query gcx_b with two-variable context: gcx_a=yes and gcx_c=no.
+            # Since gcx_c is independent, it doesn't affect gcx_b|gcx_a.
+            data = await _get_json("/v1/net/marginal?variable=gcx_b&context=gcx_a%3Dyes|gcx_c%3Dno")
+            assert data["variable"] == "gcx_b"
+            assert data["context"] == {"gcx_a": "yes", "gcx_c": "no"}
+            # gcx_b given gcx_a=yes should be 0.9 (independent of gcx_c).
+            assert data["marginal"]["yes"] == pytest.approx(0.9, abs=1e-6)
 
 
 class TestNetRoutesDisabled:
