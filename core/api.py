@@ -44,6 +44,7 @@ from core.api_models import (
     NetMarket, NetMarketList, NetMarginalResponse,
     NetOrderRequest, NetOrderPreviewResponse, NetOrderBalance,
     NetOrder, NetOrderResponse, NetOrdersList,
+    NetResolveResponse, NetVoidResponse,
 )
 from core.auth import (
     AuthStore, validate_github_token,
@@ -945,6 +946,61 @@ async def list_my_net_orders(user: AuthUser) -> NetOrdersList:
         mine = [o for o in joint._orders if o["accountId"] == user.account_id]
     orders = [_to_net_order(o) for o in reversed(mine)]
     return NetOrdersList(orders=orders)
+
+
+# ---------------------------------------------------------------------------
+# Net venue: admin settlement (Task B4) — resolve/void a market's variable.
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/net/markets/{market_id}/resolve")
+async def resolve_net_market(
+    market_id: str, req: ResolveRequest, _: AdminDep,
+) -> NetResolveResponse:
+    """Resolve the variable behind ``market_id`` and settle affected orders.
+
+    ``market_id`` is the venue's own market id (route path param); the
+    venue itself only knows about variable ids, so the market's
+    ``variableId`` is looked up via ``get_market`` before calling
+    ``resolve_variable``. Both the lookup and the resolve happen under the
+    same lock/save discipline as every other mutating ``/v1/net`` route.
+    """
+    joint = _require_joint()
+    async with app.state.lock:
+        try:
+            record = joint.get_market(market_id)
+            variable_id = str(record["variableId"])
+            report = joint.resolve_variable(variable_id, req.outcome)
+            _save()
+        except VenueError as err:
+            raise translate_venue_error(err) from err
+    return NetResolveResponse(
+        marketId=market_id,
+        variableId=variable_id,
+        outcome=req.outcome,
+        settled=list(report["settled"]),
+        calledOff=list(report["calledOff"]),
+        awaiting=list(report["awaiting"]),
+        treasuryDelta=report["treasuryDelta"],
+    )
+
+
+@app.post("/v1/net/markets/{market_id}/void")
+async def void_net_market(market_id: str, _: AdminDep) -> NetVoidResponse:
+    """Void the variable behind ``market_id``, refunding every affected order."""
+    joint = _require_joint()
+    async with app.state.lock:
+        try:
+            record = joint.get_market(market_id)
+            variable_id = str(record["variableId"])
+            report = joint.void_variable(variable_id)
+            _save()
+        except VenueError as err:
+            raise translate_venue_error(err) from err
+    return NetVoidResponse(
+        marketId=market_id,
+        variableId=variable_id,
+        calledOff=list(report["calledOff"]),
+    )
 
 
 # ---------------------------------------------------------------------------

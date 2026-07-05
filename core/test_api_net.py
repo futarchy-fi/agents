@@ -29,7 +29,7 @@ import core.api as api_module
 from core.api import app, _authenticate_github_identity
 from core.models import reset_counters
 from core.persistence import load_snapshot
-from venues.joint.msr import stake_for_edit
+from venues.joint.msr import payout_for_edit, stake_for_edit
 from venues.joint.test_venue import TINY_SEEDS, THREE_VAR_SEEDS
 
 ADMIN_HEADERS = {"Authorization": "Bearer test-admin-key"}
@@ -675,3 +675,266 @@ class TestNetOrdersMine:
             data2 = resp2.json()
             assert [o["orderId"] for o in data2["orders"]] == ["vb_2"]
             assert data2["orders"][0]["accountId"] == acc2
+
+
+# ---------------------------------------------------------------------------
+# Task B4: net admin endpoints (resolve/void)
+# ---------------------------------------------------------------------------
+
+B = Decimal("50")
+
+
+class TestNetAdminAuth:
+    async def test_resolve_and_void_reject_non_admin(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, _account_id = await _authed_user()
+
+            # No key at all -> 401, same as existing /v1/admin/* routes.
+            resp = await _post(
+                "/v1/net/markets/g1/resolve", {"outcome": "yes"}
+            )
+            assert resp.status_code == 401
+
+            resp = await _post("/v1/net/markets/g1/void", {})
+            assert resp.status_code == 401
+
+            # A regular (non-admin) user key -> 403 admin_required, matching
+            # the existing admin routes' behavior exactly.
+            resp = await _post(
+                "/v1/net/markets/g1/resolve", {"outcome": "yes"},
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 403
+            assert resp.json()["error"]["code"] == "admin_required"
+
+            resp = await _post(
+                "/v1/net/markets/g1/void", {}, headers=_headers(api_key)
+            )
+            assert resp.status_code == 403
+            assert resp.json()["error"]["code"] == "admin_required"
+
+            # Zero state change: the market is untouched by the rejected calls.
+            assert app.state.joint.get_market("g1")["marginals"] == {
+                "yes": pytest.approx(0.6, abs=1e-9),
+                "no": pytest.approx(0.4, abs=1e-9),
+            }
+
+
+class TestNetAdminResolve:
+    async def test_resolve_settles_a_winning_order_and_pays_out(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            before = app.state.joint.marginal("gcx_a")["yes"]
+
+            place_resp = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8},
+                headers=_headers(api_key),
+            )
+            assert place_resp.status_code == 200
+            order_id = place_resp.json()["orderId"]
+            stake = Decimal(place_resp.json()["stake"])
+
+            account = app.state.risk.get_account(account_id)
+            available_before_resolve = account.available_balance
+            assert account.frozen_balance == stake
+
+            expected_payout = payout_for_edit(B, before, 0.8, won=True)
+
+            resp = await _post(
+                "/v1/net/markets/g1/resolve",
+                {"outcome": "yes"},
+                headers=ADMIN_HEADERS,
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["marketId"] == "g1"
+            assert data["variableId"] == "gcx_a"
+            assert data["outcome"] == "yes"
+            assert data["settled"] == [order_id]
+            assert data["calledOff"] == []
+            assert Decimal(data["treasuryDelta"]) == -expected_payout
+
+            # The order's frozen stake is released and the account is
+            # credited exactly the msr payout — nothing more, nothing less.
+            assert account.frozen_balance == Decimal("0")
+            assert account.available_balance == (
+                available_before_resolve + stake + expected_payout
+            )
+
+    async def test_resolve_unknown_market_404s(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            resp = await _post(
+                "/v1/net/markets/nope/resolve",
+                {"outcome": "yes"},
+                headers=ADMIN_HEADERS,
+            )
+            assert resp.status_code == 404
+            assert resp.json()["error"]["code"] == "unknown_market"
+
+            resp = await _post(
+                "/v1/net/markets/nope/void", {}, headers=ADMIN_HEADERS
+            )
+            assert resp.status_code == 404
+            assert resp.json()["error"]["code"] == "unknown_market"
+
+    async def test_venue_disabled_503s(self, tmp_path):
+        reset_counters()
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            assert app.state.joint is None
+
+            resp = await _post(
+                "/v1/net/markets/g1/resolve",
+                {"outcome": "yes"},
+                headers=ADMIN_HEADERS,
+            )
+            assert resp.status_code == 503
+            assert resp.json()["error"]["code"] == "net_venue_disabled"
+
+            resp = await _post(
+                "/v1/net/markets/g1/void", {}, headers=ADMIN_HEADERS
+            )
+            assert resp.status_code == 503
+            assert resp.json()["error"]["code"] == "net_venue_disabled"
+
+
+class TestNetAdminDoubleResolveAndVoid:
+    async def test_double_resolve_and_resolve_after_void_409s(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            resp = await _post(
+                "/v1/net/markets/g1/resolve",
+                {"outcome": "yes"},
+                headers=ADMIN_HEADERS,
+            )
+            assert resp.status_code == 200
+
+            # Double-resolve.
+            resp = await _post(
+                "/v1/net/markets/g1/resolve",
+                {"outcome": "yes"},
+                headers=ADMIN_HEADERS,
+            )
+            assert resp.status_code == 409
+            assert resp.json()["error"]["code"] == "market_closed"
+
+            # Resolve after void (on a different market, g2 -> gcx_b).
+            resp = await _post(
+                "/v1/net/markets/g2/void", {}, headers=ADMIN_HEADERS
+            )
+            assert resp.status_code == 200
+
+            resp = await _post(
+                "/v1/net/markets/g2/resolve",
+                {"outcome": "yes"},
+                headers=ADMIN_HEADERS,
+            )
+            assert resp.status_code == 409
+            assert resp.json()["error"]["code"] == "market_closed"
+
+
+class TestNetAdminVoid:
+    async def test_void_refunds_staked_order_in_full(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            account = app.state.risk.get_account(account_id)
+            balance_before_stake = account.available_balance
+
+            place_resp = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8},
+                headers=_headers(api_key),
+            )
+            assert place_resp.status_code == 200
+            order_id = place_resp.json()["orderId"]
+            assert account.frozen_balance > Decimal("0")
+            assert account.available_balance < balance_before_stake
+
+            resp = await _post(
+                "/v1/net/markets/g1/void", {}, headers=ADMIN_HEADERS
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["marketId"] == "g1"
+            assert data["variableId"] == "gcx_a"
+            assert data["calledOff"] == [order_id]
+
+            # Balance restored exactly to its pre-stake value: no gain, no loss.
+            assert account.frozen_balance == Decimal("0")
+            assert account.available_balance == balance_before_stake
+
+
+class TestNetAdminPersistence:
+    async def test_resolve_persists_across_restart(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        state_path = tmp_path / "state.json"
+        api_module.STATE_PATH = str(state_path)
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+
+            place_resp = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8},
+                headers=_headers(api_key),
+            )
+            assert place_resp.status_code == 200
+
+            resp = await _post(
+                "/v1/net/markets/g1/resolve",
+                {"outcome": "yes"},
+                headers=ADMIN_HEADERS,
+            )
+            assert resp.status_code == 200
+
+        # Rebuild the app from the same STATE_PATH + seeds env.
+        async with api_module.lifespan(app):
+            data = await _get_json("/v1/net/markets/g1")
+            assert data["status"] == "resolved"
+
+            restored = app.state.joint
+            assert restored is not None
+            # No open orders resurrect on the resolved variable.
+            assert all(
+                o["status"] != "open"
+                for o in restored._orders
+                if o["variableId"] == "gcx_a"
+            )
+            settled = [
+                o for o in restored._orders
+                if o["variableId"] == "gcx_a"
+            ]
+            assert len(settled) == 1
+            assert settled[0]["status"] == "settled"

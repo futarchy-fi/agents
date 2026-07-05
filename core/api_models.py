@@ -261,6 +261,26 @@ class NetOrderResponse(NetOrder):
     balance: NetOrderBalance
 
 
+class NetResolveResponse(BaseModel):
+    """Admin resolve response: the venue's settlement report plus the
+    market/variable/outcome that were resolved."""
+    marketId: str
+    variableId: str
+    outcome: str
+    settled: list[str]
+    calledOff: list[str]
+    awaiting: list[str]
+    treasuryDelta: str
+
+
+class NetVoidResponse(BaseModel):
+    """Admin void response: the venue's call-off report plus the
+    market/variable that were voided."""
+    marketId: str
+    variableId: str
+    calledOff: list[str]
+
+
 class NetOrdersList(BaseModel):
     orders: list[NetOrder]
 

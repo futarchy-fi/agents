@@ -419,9 +419,9 @@ class JointVenue:
         if market_id is None:
             raise UnknownVariable(variable_id)
         if variable_id in self._resolutions:
-            raise VenueError(f"variable already resolved: {variable_id}")
+            raise MarketClosed(f"variable already resolved: {variable_id}")
         if variable_id in self._voided:
-            raise VenueError(f"variable already voided: {variable_id}")
+            raise MarketClosed(f"variable already voided: {variable_id}")
         return market_id, self._markets[market_id]
 
     def _call_off(self, order: dict[str, Any]) -> None:
