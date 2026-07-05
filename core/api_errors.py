@@ -11,6 +11,7 @@ from core.risk_engine import InsufficientBalance
 from venues.joint.venue import (
     ContextContradicted,
     InsufficientCredits,
+    InsufficientTreasury,
     InvalidOutcome,
     InvalidTarget,
     MarketClosed,
@@ -85,7 +86,8 @@ def translate_venue_error(exc: VenueError) -> APIError:
     400 invalid_target; InvalidOutcome -> 400 invalid_outcome;
     InsufficientCredits -> 400 insufficient_credits; MarketClosed -> 409
     market_closed; ContextContradicted -> 409 context_contradicted;
-    WidthBudgetExceeded -> 422 width_budget.
+    WidthBudgetExceeded -> 422 width_budget; InsufficientTreasury -> 409
+    insufficient_treasury.
 
     ``TradeRejected`` (and any other, currently unforeseen, ``VenueError``
     subtype) isn't in that list — it's the catch-all for a rejected
@@ -110,5 +112,10 @@ def translate_venue_error(exc: VenueError) -> APIError:
         return APIError(409, "context_contradicted", msg)
     if isinstance(exc, WidthBudgetExceeded):
         return APIError(422, "width_budget", msg)
+    if isinstance(exc, InsufficientTreasury):
+        # Server-side solvency guard, not a client error: the resolve was
+        # refused to protect state integrity. 409 signals a conflict with
+        # current server state that an operator must investigate.
+        return APIError(409, "insufficient_treasury", msg)
 
     return APIError(400, "trade_rejected", msg)

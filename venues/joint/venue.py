@@ -56,6 +56,17 @@ class InsufficientCredits(VenueError):
     """Raised when an account lacks the available balance to cover a stake."""
 
 
+class InsufficientTreasury(VenueError):
+    """Raised when the treasury can't cover a resolution's winning payouts.
+
+    Guards against a partially-applied settlement: the check runs before any
+    state is mutated, so an under-funded treasury fails cleanly instead of
+    aborting mid-walk with orders half-settled and the joint already
+    conditioned. Unreachable in normal operation (the treasury is seeded far
+    above any realistic aggregate payout) — a defensive backstop against a
+    drained/misconfigured treasury or an accounting bug."""
+
+
 class WidthBudgetExceeded(VenueError):
     """Raised when a probability edit is rejected by the junction-tree width budget."""
 
@@ -464,6 +475,44 @@ class JointVenue:
         self._risk_engine.release_lock(order["lockId"])
         order["status"] = "called_off"
 
+    def _resolution_treasury_outflow(
+        self, variable_id: str, outcome_id: str
+    ) -> Decimal:
+        """Total credits that would flow OUT of the treasury (to winners) if
+        ``variable_id`` resolved to ``outcome_id`` right now.
+
+        Read-only: mirrors the per-order settlement decisions in
+        ``resolve_variable`` below without mutating any order, the joint, or
+        balances. Only positive payouts (treasury -> trader) count; losing
+        payouts flow INTO the treasury and can never cause an overdraft, so
+        they're ignored — which makes the resulting check
+        ``treasury.available >= outflow`` sufficient regardless of the order
+        in which the real walk applies the transfers.
+
+        Kept deliberately in lock-step with the walk; the
+        ``test_resolve_precheck_matches_walk`` test asserts they agree.
+        """
+        outflow = Decimal("0")
+        for order in self._orders:
+            if order["status"] not in ("open", "awaiting_context"):
+                continue
+            remaining = dict(order["remainingContext"])
+            if variable_id in remaining:
+                if remaining[variable_id] != outcome_id:
+                    continue  # context contradicted -> called off, no payout
+                del remaining[variable_id]
+            won = order.get("resolvedWon")
+            if order["variableId"] == variable_id:
+                won = outcome_id == order["outcomeId"]
+            if won is None or remaining:
+                continue  # win/loss undetermined or context still pending
+            payout = payout_for_edit(
+                self._liquidity, order["before"], order["target"], won,
+            )
+            if payout > 0:
+                outflow += payout
+        return outflow
+
     def resolve_variable(self, variable_id: str, outcome_id: str) -> dict[str, Any]:
         """Resolve ``variable_id`` to ``outcome_id`` and settle affected orders.
 
@@ -481,6 +530,20 @@ class JointVenue:
         market_id, record = self._settlement_market(variable_id)
         if outcome_id not in {o["id"] for o in record["outcomes"]}:
             raise InvalidOutcome(f"unknown outcome: {outcome_id}")
+
+        # Solvency precheck (I2): verify the treasury can cover every winning
+        # payout BEFORE mutating anything, so an under-funded treasury fails
+        # cleanly rather than aborting mid-walk with a half-applied
+        # settlement. See _resolution_treasury_outflow.
+        outflow = self._resolution_treasury_outflow(variable_id, outcome_id)
+        treasury = self._risk_engine.get_account(self.treasury_account_id)
+        if treasury.available_balance < outflow:
+            raise InsufficientTreasury(
+                f"treasury {self.treasury_account_id} cannot cover resolution "
+                f"of {variable_id}->{outcome_id}: winning payouts total "
+                f"{outflow}, treasury has {treasury.available_balance} "
+                "available"
+            )
 
         self._fm.condition(variable_id, outcome_id)
         self._resolutions[variable_id] = outcome_id

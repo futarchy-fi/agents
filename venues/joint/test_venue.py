@@ -8,6 +8,7 @@ from venues.joint.msr import payout_for_edit, stake_for_edit
 from venues.joint.venue import (
     ContextContradicted,
     InsufficientCredits,
+    InsufficientTreasury,
     InvalidOutcome,
     InvalidTarget,
     JointVenue,
@@ -820,3 +821,99 @@ class TestSettlement:
         # than the generic 400 trade_rejected.
         with pytest.raises(InvalidOutcome):
             venue.resolve_variable("gcx_a", "maybe")
+
+
+class TestTreasurySolvencyPrecheck:
+    """I2: resolve_variable prechecks treasury solvency before mutating."""
+
+    def _setup(self) -> tuple[RiskEngine, JointVenue]:
+        engine = RiskEngine()
+        venue = JointVenue(engine, TINY_SEEDS)
+        return engine, venue
+
+    def test_resolve_precheck_matches_walk(self):
+        # Winner (treasury outflow), loser (inflow), and a contradicted-context
+        # order (called off, no flow). The precheck's predicted outflow must
+        # equal the sum of positive payouts the real walk actually pays out —
+        # this is the drift guard keeping _resolution_treasury_outflow in sync
+        # with resolve_variable.
+        engine, venue = self._setup()
+        winner = _fund(engine, Decimal("1000"))
+        loser = _fund(engine, Decimal("1000"))
+        ctx = _fund(engine, Decimal("1000"))
+        venue.place_edit(winner, "gcx_a", "yes", 0.8)          # wins on 'yes'
+        venue.place_edit(loser, "gcx_a", "no", 0.8)            # loses on 'yes'
+        venue.place_edit(ctx, "gcx_b", "yes", 0.5,
+                         context={"gcx_a": "no"})              # contradicted
+
+        predicted = venue._resolution_treasury_outflow("gcx_a", "yes")
+        venue.resolve_variable("gcx_a", "yes")
+
+        actual_outflow = sum(
+            (Decimal(o["payout"]) for o in venue._orders
+             if o["status"] == "settled" and Decimal(o["payout"]) > 0),
+            Decimal("0"),
+        )
+        assert predicted > 0            # the winner did pay out
+        assert predicted == actual_outflow
+
+    def test_insufficient_treasury_raises_before_any_mutation(self):
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+        before = venue.marginal("gcx_a")["yes"]
+        order = venue.place_edit(aid, "gcx_a", "yes", 0.8)
+        payout = payout_for_edit(B, before, 0.8, True)
+        assert payout > 0
+
+        # Drain the treasury to strictly less than the winning payout.
+        treasury = engine.get_account(venue.treasury_account_id)
+        sink = engine.create_account()
+        keep = payout - Decimal("0.000001")
+        engine.transfer_available(
+            venue.treasury_account_id, sink.id,
+            treasury.available_balance - keep,
+        )
+        assert treasury.available_balance == keep
+
+        marg_before = venue.marginal("gcx_a")["yes"]
+        acc = engine.get_account(aid)
+        avail_before, frozen_before = acc.available_balance, acc.frozen_balance
+
+        with pytest.raises(InsufficientTreasury):
+            venue.resolve_variable("gcx_a", "yes")
+
+        # Nothing moved: order still open, joint not conditioned, balances intact.
+        assert order["status"] == "open"
+        assert "gcx_a" not in venue._resolutions
+        assert venue.marginal("gcx_a")["yes"] == marg_before
+        assert treasury.available_balance == keep
+        acc = engine.get_account(aid)
+        assert acc.available_balance == avail_before
+        assert acc.frozen_balance == frozen_before
+
+        # And a refunded treasury resolves cleanly — proving the failed
+        # attempt left the venue in a fully resolvable state.
+        engine.transfer_available(sink.id, venue.treasury_account_id, payout)
+        result = venue.resolve_variable("gcx_a", "yes")
+        assert result["settled"] == [order["orderId"]]
+        assert order["status"] == "settled"
+
+    def test_precheck_ignores_losing_payouts(self):
+        # A losing resolution is a treasury INFLOW, so the precheck reports
+        # zero outflow and succeeds even with a near-empty treasury.
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+        order = venue.place_edit(aid, "gcx_a", "yes", 0.8)     # loses on 'no'
+
+        treasury = engine.get_account(venue.treasury_account_id)
+        sink = engine.create_account()
+        engine.transfer_available(
+            venue.treasury_account_id, sink.id,
+            treasury.available_balance - Decimal("1"),
+        )
+        assert venue._resolution_treasury_outflow("gcx_a", "no") == Decimal("0")
+
+        result = venue.resolve_variable("gcx_a", "no")         # must NOT raise
+        assert result["settled"] == [order["orderId"]]
+        assert order["status"] == "settled"
+        assert treasury.available_balance > Decimal("1")       # loser paid in
