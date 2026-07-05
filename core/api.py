@@ -39,6 +39,7 @@ from core.api_models import (
     AddLiquidityRequest, AddLiquidityResponse,
     UpdateMetadataRequest,
     AddRepoRequest, TrackedRepoResponse, WebhookResponse,
+    NetMarket, NetMarketList, NetMarginalResponse,
 )
 from core.auth import (
     AuthStore, validate_github_token,
@@ -50,7 +51,9 @@ from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
 from core.models import ZERO, TrackedRepo, reset_counters
 from core.persistence import save_snapshot, load_snapshot
 from core.risk_engine import RiskEngine, InsufficientBalance
-from venues.joint.venue import JointVenue, VenueError
+from venues.joint.venue import (
+    ContextContradicted, JointVenue, UnknownMarket, UnknownVariable, VenueError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -744,6 +747,99 @@ async def get_market_trades(market_id: int) -> list[TradeResponse]:
         )
         for t in m.trades
     ]
+
+
+# ---------------------------------------------------------------------------
+# Net venue (Plan B: joint/factored market) read routes — public, no auth.
+# ---------------------------------------------------------------------------
+
+def _require_joint() -> JointVenue:
+    """The live venue, or a 503 ``net_venue_disabled`` when none is wired."""
+    joint = getattr(app.state, "joint", None)
+    if joint is None:
+        raise APIError(503, "net_venue_disabled",
+                        "the net venue is not enabled (EXCHANGE_SEEDS_PATH unset)")
+    return joint
+
+
+def _parse_context(raw: str | None) -> dict[str, str]:
+    """Parse "gcx_a=yes|gcx_b=no" into {"gcx_a": "yes", "gcx_b": "no"}.
+
+    Same pipe-separated ``var=outcome`` encoding as the venue's own
+    ``parse_cpt_key`` (venues/joint/inference/network_model.py). ``None``
+    or empty string means no context. Any malformed segment (missing "=",
+    empty var, empty outcome) is a 400, not a silently-dropped pair.
+    """
+    if not raw:
+        return {}
+    context: dict[str, str] = {}
+    for part in raw.split("|"):
+        variable_id, sep, outcome_id = part.partition("=")
+        if not sep or not variable_id or not outcome_id:
+            raise APIError(400, "invalid_context",
+                            f"malformed context segment: {part!r}")
+        context[variable_id] = outcome_id
+    return context
+
+
+def _to_net_market(record: dict) -> NetMarket:
+    """Build a ``NetMarket`` response from a venue ``get_market()`` dict.
+
+    Copies every mutable field (outcomes, marginals, parents) rather than
+    handing the venue's live dict/lists to the response model by reference
+    — the venue may hold these as internal state (seed records, freshly
+    computed marginals) that must never be mutated through a response
+    object held elsewhere.
+    """
+    return NetMarket(
+        id=str(record["id"]),
+        variableId=str(record["variableId"]),
+        title=record.get("title", ""),
+        description=record.get("description"),
+        status=record.get("status", "open"),
+        outcomes=[dict(o) for o in record.get("outcomes", [])],
+        marginals={o: float(p) for o, p in record["marginals"].items()},
+        parents=list(record.get("parents", [])),
+    )
+
+
+@app.get("/v1/net/markets")
+async def list_net_markets() -> NetMarketList:
+    """List every net-venue market with its live (traded) marginals."""
+    joint = _require_joint()
+    async with app.state.lock:
+        markets = [_to_net_market(joint.get_market(mid)) for mid in joint.market_ids()]
+    return NetMarketList(markets=markets, count=len(markets))
+
+
+@app.get("/v1/net/markets/{market_id}")
+async def get_net_market(market_id: str) -> NetMarket:
+    """Get one net-venue market's live detail."""
+    joint = _require_joint()
+    async with app.state.lock:
+        try:
+            record = joint.get_market(market_id)
+        except UnknownMarket as err:
+            raise APIError(404, "unknown_market", str(err)) from err
+    return _to_net_market(record)
+
+
+@app.get("/v1/net/marginal")
+async def get_net_marginal(
+    variable: str,
+    context: str | None = None,
+) -> NetMarginalResponse:
+    """P(variable | context) under the net venue's current belief state."""
+    joint = _require_joint()
+    ctx = _parse_context(context)
+    async with app.state.lock:
+        try:
+            result = joint.marginal(variable, ctx)
+        except UnknownVariable as err:
+            raise APIError(404, "unknown_market", str(err)) from err
+        except ContextContradicted as err:
+            raise APIError(409, "context_contradicted", str(err)) from err
+    return NetMarginalResponse(variable=variable, context=ctx, marginal=dict(result))
 
 
 # ---------------------------------------------------------------------------

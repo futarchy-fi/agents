@@ -48,6 +48,13 @@ async def _get_json(path: str) -> dict:
         return resp.json()
 
 
+async def _get(path: str):
+    """GET without asserting status — for tests exercising error paths."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        return await c.get(path)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     """Every test in this module manages its own STATE_PATH / seeds env."""
@@ -177,3 +184,126 @@ class TestVenuesSectionNotErased:
         assert venues_after_second_save.get("joint") is not None
         assert len(venues_after_second_save["joint"]["orders"]) == 1
         assert venues_after_second_save == venues_after_first_save
+
+
+# ---------------------------------------------------------------------------
+# Task B2: net read endpoints
+# ---------------------------------------------------------------------------
+
+class TestNetMarketsList:
+    async def test_list_returns_both_markets_with_live_marginals(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            data = await _get_json("/v1/net/markets")
+            assert data["count"] == 2
+            by_id = {m["id"]: m for m in data["markets"]}
+            assert set(by_id) == {"g1", "g2"}
+
+            g1 = by_id["g1"]
+            assert g1["variableId"] == "gcx_a"
+            assert g1["marginals"]["yes"] == pytest.approx(0.6, abs=1e-6)
+            assert g1["parents"] == []
+
+            g2 = by_id["g2"]
+            assert g2["variableId"] == "gcx_b"
+            assert g2["parents"] == ["gcx_a"]
+            assert g2["marginals"]["yes"] == pytest.approx(
+                0.6 * 0.9 + 0.4 * 0.2, abs=1e-6
+            )
+
+
+class TestNetMarketDetail:
+    async def test_detail_known_market(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            data = await _get_json("/v1/net/markets/g2")
+            assert data["id"] == "g2"
+            assert data["parents"] == ["gcx_a"]
+
+    async def test_detail_unknown_market_404s(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            resp = await _get("/v1/net/markets/nope")
+            assert resp.status_code == 404
+            assert resp.json()["error"]["code"] == "unknown_market"
+
+
+class TestNetMarginal:
+    async def test_marginal_with_context(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            data = await _get_json("/v1/net/marginal?variable=gcx_b&context=gcx_a%3Dyes")
+            assert data["variable"] == "gcx_b"
+            assert data["context"] == {"gcx_a": "yes"}
+            assert data["marginal"]["yes"] == pytest.approx(0.9, abs=1e-6)
+
+    async def test_marginal_unknown_variable_404s(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            resp = await _get("/v1/net/marginal?variable=nope")
+            assert resp.status_code == 404
+            assert resp.json()["error"]["code"] == "unknown_market"
+
+    async def test_marginal_malformed_context_400s(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            resp = await _get("/v1/net/marginal?variable=gcx_b&context=gcx_a-yes")
+            assert resp.status_code == 400
+            assert resp.json()["error"]["code"] == "invalid_context"
+
+    async def test_marginal_contradicted_context_409s(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            # Resolve gcx_a to "no", then query a context that assumes "yes".
+            app.state.joint.resolve_variable("gcx_a", "no")
+            resp = await _get("/v1/net/marginal?variable=gcx_b&context=gcx_a%3Dyes")
+            assert resp.status_code == 409
+            assert resp.json()["error"]["code"] == "context_contradicted"
+
+
+class TestNetRoutesDisabled:
+    async def test_all_three_routes_503_when_venue_disabled(self, tmp_path):
+        reset_counters()
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            assert app.state.joint is None
+
+            for path in (
+                "/v1/net/markets",
+                "/v1/net/markets/g1",
+                "/v1/net/marginal?variable=gcx_a",
+            ):
+                resp = await _get(path)
+                assert resp.status_code == 503, path
+                assert resp.json()["error"]["code"] == "net_venue_disabled", path

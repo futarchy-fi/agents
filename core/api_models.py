@@ -196,6 +196,28 @@ class NetHealth(BaseModel):
     enabled: bool
 
 
+# --- Net venue (Plan B: joint/factored market) ---
+
+class NetMarket(BaseModel):
+    id: str
+    variableId: str
+    title: str
+    description: str | None = None
+    status: str
+    outcomes: list[dict]
+    marginals: dict[str, float]
+    parents: list[str] = []
+
+class NetMarketList(BaseModel):
+    markets: list[NetMarket]
+    count: int
+
+class NetMarginalResponse(BaseModel):
+    variable: str
+    context: dict[str, str]
+    marginal: dict[str, float]
+
+
 class HealthResponse(BaseModel):
     status: str
     markets: int

@@ -156,6 +156,20 @@ class JointVenue:
             nodes, liquidity=float(liquidity), max_width=max_width
         )
 
+        # Parents-for-API, derived once here from the same CPT-parsed
+        # ``nodes`` the inference engine itself was built from (see
+        # ``build_network_nodes`` / ``parse_cpt_key`` in
+        # ``venues.joint.inference.network_model``) rather than re-parsing
+        # ``conditionalMarginals`` a second time, or trusting a hand-authored
+        # "parents" field a seed record might (or might not) carry — a
+        # market with a malformed/incomplete CPT falls back to an
+        # independent root there (``parents: ()``), and this table stays
+        # consistent with that fallback by construction. Read by
+        # ``get_market`` below.
+        self._parents_by_variable: dict[str, list[str]] = {
+            str(node["variable_id"]): list(node["parents"]) for node in nodes
+        }
+
         if _bootstrap_treasury:
             account = risk_engine.create_account()
             risk_engine.mint(account.id, TREASURY_SEED)
@@ -193,13 +207,19 @@ class JointVenue:
         return self._market_ids_list
 
     def get_market(self, market_id: str) -> dict[str, Any]:
-        """Seed metadata for ``market_id`` merged with live marginals."""
+        """Seed metadata for ``market_id`` merged with live marginals and parents.
+
+        ``parents`` here always overrides any "parents" key the raw seed
+        record itself might carry — see ``self._parents_by_variable`` above
+        for why the CPT-derived table is the one source of truth.
+        """
         record = self._markets.get(market_id)
         if record is None:
             raise UnknownMarket(market_id)
         variable_id = str(record["variableId"])
         marginals = self._fm.marginal(variable_id)
-        return {**record, "marginals": marginals}
+        parents = self._parents_by_variable.get(variable_id, [])
+        return {**record, "marginals": marginals, "parents": parents}
 
     def marginal(
         self, variable_id: str, context: dict[str, str] | None = None
