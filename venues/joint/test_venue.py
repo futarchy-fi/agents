@@ -8,6 +8,7 @@ from venues.joint.msr import payout_for_edit, stake_for_edit
 from venues.joint.venue import (
     ContextContradicted,
     InsufficientCredits,
+    InvalidOutcome,
     InvalidTarget,
     JointVenue,
     MarketClosed,
@@ -446,6 +447,64 @@ class TestLifecycleGuards:
         assert result["settled"] == [order["orderId"]]
         assert order["status"] == "settled"
 
+    # -- fund-freeze hole: unknown context key / bad context outcome ------
+    #
+    # A context key that names no real variable used to be silently
+    # skipped by fm.marginal/fm.trade_to_probability, so the edit placed
+    # successfully with a remainingContext entry no resolve_variable call
+    # could ever match — the order (and its frozen stake) would sit in
+    # awaiting_context forever. These guards must fire in _check_lifecycle,
+    # shared by both place_edit and preview_edit, before any lock/order/fm
+    # call.
+
+    def test_place_edit_unknown_context_key_raises_unknown_variable(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        before = venue.marginal("gcx_b")["yes"]
+
+        with pytest.raises(UnknownVariable):
+            venue.place_edit(
+                account_id, "gcx_b", "yes", 0.5, context={"nope": "yes"}
+            )
+        self._assert_no_funds_or_state_moved(engine, venue, account_id)
+        assert venue.marginal("gcx_b")["yes"] == pytest.approx(before, abs=1e-9)
+
+    def test_preview_edit_unknown_context_key_raises_unknown_variable(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        before = venue.marginal("gcx_b")["yes"]
+
+        with pytest.raises(UnknownVariable):
+            venue.preview_edit(
+                account_id, "gcx_b", "yes", 0.5, context={"nope": "yes"}
+            )
+        self._assert_no_funds_or_state_moved(engine, venue, account_id)
+        assert venue.marginal("gcx_b")["yes"] == pytest.approx(before, abs=1e-9)
+
+    def test_place_edit_invalid_context_outcome_raises_invalid_outcome(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        before = venue.marginal("gcx_b")["yes"]
+
+        with pytest.raises(InvalidOutcome):
+            venue.place_edit(
+                account_id, "gcx_b", "yes", 0.5, context={"gcx_a": "maybe"}
+            )
+        self._assert_no_funds_or_state_moved(engine, venue, account_id)
+        assert venue.marginal("gcx_b")["yes"] == pytest.approx(before, abs=1e-9)
+
+    def test_preview_edit_invalid_context_outcome_raises_invalid_outcome(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        before = venue.marginal("gcx_b")["yes"]
+
+        with pytest.raises(InvalidOutcome):
+            venue.preview_edit(
+                account_id, "gcx_b", "yes", 0.5, context={"gcx_a": "maybe"}
+            )
+        self._assert_no_funds_or_state_moved(engine, venue, account_id)
+        assert venue.marginal("gcx_b")["yes"] == pytest.approx(before, abs=1e-9)
+
 
 # -- settlement: resolve_variable / void_variable -------------------------
 
@@ -735,5 +794,9 @@ class TestSettlement:
             venue.resolve_variable("nope", "yes")
         with pytest.raises(UnknownVariable):
             venue.void_variable("nope")
-        with pytest.raises(VenueError):
+        # A bad (real-variable, unreal-outcome) resolution is specifically
+        # InvalidOutcome, not the generic VenueError catch-all — this is
+        # what maps it to 400 invalid_outcome at the API boundary rather
+        # than the generic 400 trade_rejected.
+        with pytest.raises(InvalidOutcome):
             venue.resolve_variable("gcx_a", "maybe")

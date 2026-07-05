@@ -11,6 +11,7 @@ from core.risk_engine import InsufficientBalance
 from venues.joint.venue import (
     ContextContradicted,
     InsufficientCredits,
+    InvalidOutcome,
     InvalidTarget,
     MarketClosed,
     UnknownMarket,
@@ -81,9 +82,10 @@ def translate_venue_error(exc: VenueError) -> APIError:
 
     Exact mapping per planB-constraints.md:
     UnknownVariable/UnknownMarket -> 404 unknown_market; InvalidTarget ->
-    400 invalid_target; InsufficientCredits -> 400 insufficient_credits;
-    MarketClosed -> 409 market_closed; ContextContradicted -> 409
-    context_contradicted; WidthBudgetExceeded -> 422 width_budget.
+    400 invalid_target; InvalidOutcome -> 400 invalid_outcome;
+    InsufficientCredits -> 400 insufficient_credits; MarketClosed -> 409
+    market_closed; ContextContradicted -> 409 context_contradicted;
+    WidthBudgetExceeded -> 422 width_budget.
 
     ``TradeRejected`` (and any other, currently unforeseen, ``VenueError``
     subtype) isn't in that list — it's the catch-all for a rejected
@@ -98,6 +100,8 @@ def translate_venue_error(exc: VenueError) -> APIError:
         return APIError(404, "unknown_market", msg)
     if isinstance(exc, InvalidTarget):
         return APIError(400, "invalid_target", msg)
+    if isinstance(exc, InvalidOutcome):
+        return APIError(400, "invalid_outcome", msg)
     if isinstance(exc, InsufficientCredits):
         return APIError(400, "insufficient_credits", msg)
     if isinstance(exc, MarketClosed):

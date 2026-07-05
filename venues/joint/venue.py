@@ -82,6 +82,19 @@ class ContextContradicted(VenueError):
     """
 
 
+class InvalidOutcome(VenueError):
+    """Raised when an outcome value is not among a variable's real outcomes.
+
+    Covers two call sites: (1) a context key at edit time whose value isn't
+    one of the outcomes of the variable that key names, and (2) the
+    resolved-outcome argument to ``resolve_variable`` when it isn't one of
+    the target variable's outcomes. Both are "bad outcome id", distinct
+    from ``UnknownVariable`` (the variable/key itself doesn't exist) and
+    from ``ContextContradicted`` (the variable and outcome are both real,
+    but contradict an already-recorded resolution).
+    """
+
+
 class InvalidTarget(VenueError):
     """Raised when a target (or the current price) is degenerate.
 
@@ -265,6 +278,20 @@ class JointVenue:
           a market that can never resolve can never settle, so it must
           never reach the risk engine (a bet against it would freeze funds
           forever otherwise).
+        - a context KEY that names no known variable -> ``UnknownVariable``:
+          this is the fund-freeze hole this guard exists to close. A typo'd
+          or made-up context key used to be silently ignored by
+          ``fm.marginal``/``fm.trade_to_probability`` (they just skip
+          evidence variables they don't recognize), so the edit would place
+          successfully with a ``remainingContext`` entry that names no real
+          variable — no future ``resolve_variable`` call could EVER match
+          that key, so the order (and its frozen stake) would sit in
+          ``awaiting_context`` forever. Rejecting it here, before any lock
+          or fm call, is what prevents that.
+        - a context OUTCOME not among the named variable's real outcomes ->
+          ``InvalidOutcome``: same rejection-before-any-money-path
+          reasoning, for a value that will never match any resolution
+          either.
         - a context key that's voided -> ``MarketClosed`` (same reasoning:
           that leg of the context can never be decided).
         - a context key resolved to an outcome that contradicts the
@@ -286,6 +313,14 @@ class JointVenue:
 
         remaining: dict[str, str] = {}
         for key, value in context.items():
+            market_id = self._var_to_market.get(key)
+            if market_id is None:
+                raise UnknownVariable(f"unknown context variable: {key}")
+            outcomes = {o["id"] for o in self._markets[market_id]["outcomes"]}
+            if value not in outcomes:
+                raise InvalidOutcome(
+                    f"context {key}={value!r} is not a valid outcome for {key}"
+                )
             if key in self._voided:
                 raise MarketClosed(f"context variable is voided: {key}")
             if key in self._resolutions:
@@ -445,7 +480,7 @@ class JointVenue:
         """
         market_id, record = self._settlement_market(variable_id)
         if outcome_id not in {o["id"] for o in record["outcomes"]}:
-            raise VenueError(f"unknown outcome: {outcome_id}")
+            raise InvalidOutcome(f"unknown outcome: {outcome_id}")
 
         self._fm.condition(variable_id, outcome_id)
         self._resolutions[variable_id] = outcome_id

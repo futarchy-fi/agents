@@ -547,6 +547,125 @@ class TestNetOrderTargetClamp:
             assert len(app.state.joint._orders) == 0
 
 
+class TestNetOrderContextValidation:
+    """Fund-freeze hole (final-review item 1): a context key that names no
+    real variable used to be silently ignored by fm.marginal/
+    fm.trade_to_probability, so an edit would place successfully with a
+    remainingContext entry no future resolve_variable call could ever
+    match — the order (and its frozen stake) would sit in
+    awaiting_context forever. Both /v1/net/orders and /v1/net/orders/preview
+    must reject before touching balances or the marginal.
+    """
+
+    async def test_place_unknown_context_key_404s_with_zero_state_change(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            before = app.state.joint.marginal("gcx_b")["yes"]
+
+            resp = await _post(
+                "/v1/net/orders",
+                {
+                    "variableId": "gcx_b", "outcomeId": "yes", "target": 0.5,
+                    "context": {"nope": "yes"},
+                },
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 404
+            assert resp.json()["error"]["code"] == "unknown_market"
+
+            account = app.state.risk.get_account(account_id)
+            assert account.frozen_balance == Decimal("0")
+            assert account.available_balance == Decimal("1000")
+            assert len(app.state.joint._orders) == 0
+            assert app.state.joint.marginal("gcx_b")["yes"] == pytest.approx(
+                before, abs=1e-9
+            )
+
+    async def test_preview_unknown_context_key_404s_with_zero_state_change(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+
+            resp = await _post(
+                "/v1/net/orders/preview",
+                {
+                    "variableId": "gcx_b", "outcomeId": "yes", "target": 0.5,
+                    "context": {"nope": "yes"},
+                },
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 404
+            assert resp.json()["error"]["code"] == "unknown_market"
+            assert len(app.state.joint._orders) == 0
+
+    async def test_place_invalid_context_outcome_400s_with_zero_state_change(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            before = app.state.joint.marginal("gcx_b")["yes"]
+
+            resp = await _post(
+                "/v1/net/orders",
+                {
+                    "variableId": "gcx_b", "outcomeId": "yes", "target": 0.5,
+                    "context": {"gcx_a": "maybe"},
+                },
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 400
+            assert resp.json()["error"]["code"] == "invalid_outcome"
+
+            account = app.state.risk.get_account(account_id)
+            assert account.frozen_balance == Decimal("0")
+            assert account.available_balance == Decimal("1000")
+            assert len(app.state.joint._orders) == 0
+            assert app.state.joint.marginal("gcx_b")["yes"] == pytest.approx(
+                before, abs=1e-9
+            )
+
+    async def test_preview_invalid_context_outcome_400s_with_zero_state_change(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+
+            resp = await _post(
+                "/v1/net/orders/preview",
+                {
+                    "variableId": "gcx_b", "outcomeId": "yes", "target": 0.5,
+                    "context": {"gcx_a": "maybe"},
+                },
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 400
+            assert resp.json()["error"]["code"] == "invalid_outcome"
+            assert len(app.state.joint._orders) == 0
+
+
 class TestNetOrderResolvedVariable:
     async def test_edit_on_resolved_variable_409s(self, tmp_path, monkeypatch):
         reset_counters()
@@ -794,6 +913,30 @@ class TestNetAdminResolve:
             )
             assert resp.status_code == 404
             assert resp.json()["error"]["code"] == "unknown_market"
+
+    async def test_resolve_invalid_outcome_400s(self, tmp_path, monkeypatch):
+        # Final-review item 4: resolve_variable's own outcome validation
+        # raises InvalidOutcome (not a bare VenueError), which must map to
+        # 400 invalid_outcome here rather than the generic trade_rejected.
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            resp = await _post(
+                "/v1/net/markets/g1/resolve",
+                {"outcome": "maybe"},
+                headers=ADMIN_HEADERS,
+            )
+            assert resp.status_code == 400
+            assert resp.json()["error"]["code"] == "invalid_outcome"
+
+            # Zero state change: the market is untouched by the rejected call.
+            assert app.state.joint.get_market("g1")["marginals"] == {
+                "yes": pytest.approx(0.6, abs=1e-9),
+                "no": pytest.approx(0.4, abs=1e-9),
+            }
 
     async def test_venue_disabled_503s(self, tmp_path):
         reset_counters()
