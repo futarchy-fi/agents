@@ -17,6 +17,7 @@ so this module stays a thin adapter rather than a second copy of that logic.
 from __future__ import annotations
 
 import json
+import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
@@ -26,6 +27,8 @@ from venues.joint.inference import FactoredMarket, JointMarketError, build_netwo
 from venues.joint.msr import payout_for_edit, stake_for_edit
 
 TREASURY_SEED = Decimal("1000000")
+
+logger = logging.getLogger(__name__)
 
 
 def nodes_from_seeds(seeds: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -71,9 +74,24 @@ class JointVenue:
         seeds_path: str | Path | dict,
         liquidity: Decimal = Decimal("50"),
         max_width: int = 8,
+        *,
+        _bootstrap_treasury: bool = True,
+        _treasury_account_id: int | None = None,
     ) -> None:
+        """Build a venue from a seeds-v1 document.
+
+        ``_bootstrap_treasury`` / ``_treasury_account_id`` are a private
+        escape hatch for ``from_snapshot``: when restoring from a persisted
+        exchange snapshot, the treasury account already exists (it was
+        restored along with every other RE account) and must NOT be
+        re-minted. Regular callers never pass these.
+        """
         self._risk_engine = risk_engine
         self._liquidity: Decimal = liquidity
+        self._max_width: int = max_width
+        self._seeds_source: str = (
+            "<inline>" if isinstance(seeds_path, dict) else str(seeds_path)
+        )
         seeds = self._load_seeds(seeds_path)
 
         self._markets: dict[str, dict[str, Any]] = dict(seeds["markets"])
@@ -87,9 +105,17 @@ class JointVenue:
             nodes, liquidity=float(liquidity), max_width=max_width
         )
 
-        account = risk_engine.create_account()
-        risk_engine.mint(account.id, TREASURY_SEED)
-        self.treasury_account_id: int = account.id
+        if _bootstrap_treasury:
+            account = risk_engine.create_account()
+            risk_engine.mint(account.id, TREASURY_SEED)
+            self.treasury_account_id: int = account.id
+        else:
+            if _treasury_account_id is None:
+                raise VenueError(
+                    "_treasury_account_id is required when "
+                    "_bootstrap_treasury=False"
+                )
+            self.treasury_account_id = _treasury_account_id
 
         self._orders: list[dict[str, Any]] = []
         self._orders_by_var: dict[str, list[dict[str, Any]]] = {}
@@ -343,6 +369,115 @@ class JointVenue:
                 called_off.append(order["orderId"])
 
         return {"calledOff": called_off}
+
+    # -- persistence --------------------------------------------------------
+
+    def snapshot(self) -> dict[str, Any]:
+        """Serializable venue state for ``core.persistence``.
+
+        ``ordersByVar`` is deliberately NOT persisted — it's a derived index
+        rebuilt from ``orders`` on load. ``marketStatus`` only carries the
+        status/outcome deltas for markets that were resolved or voided
+        (copy-on-write records in ``self._markets``); untouched seed records
+        aren't duplicated here, since they come back from ``seeds`` again.
+        """
+        market_status: dict[str, dict[str, Any]] = {}
+        for market_id, record in self._markets.items():
+            status = record.get("status")
+            if status is None:
+                continue  # untouched seed record, nothing to persist
+            delta = {"status": status}
+            if "resolvedOutcome" in record:
+                delta["resolvedOutcome"] = record["resolvedOutcome"]
+            market_status[market_id] = delta
+
+        return {
+            "orders": self._orders,
+            "orderSeq": self._order_seq,
+            "resolutions": dict(self._resolutions),
+            "voided": sorted(self._voided),
+            "marketStatus": market_status,
+            "treasuryAccountId": self.treasury_account_id,
+            "liquidity": str(self._liquidity),
+            "maxWidth": self._max_width,
+            "fm": self._fm.snapshot(),
+            "seedsSource": self._seeds_source,
+        }
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        data: Mapping[str, Any],
+        risk_engine: RiskEngine,
+        seeds: str | Path | dict,
+    ) -> "JointVenue":
+        """Rebuild a ``JointVenue`` from ``snapshot()`` output.
+
+        ``risk_engine`` must already contain the restored treasury account
+        (it comes from a persisted exchange snapshot, restored alongside
+        every other account) — the constructor is told to skip its usual
+        create_account/mint bootstrap and reuse ``treasuryAccountId`` as-is.
+
+        ``seeds`` is the same seeds-v1 source (path or dict) the original
+        venue was built from; it's needed regardless of whether the
+        FactoredMarket snapshot verifies, since market metadata
+        (``self._markets`` / ``self._var_to_market``) is always rebuilt from
+        it.
+
+        The constructor already rebuilds ``self._fm`` from ``seeds`` (fresh
+        calibrated priors, no trade history). We then try to overwrite it
+        with the *exact* traded beliefs from ``data["fm"]`` via
+        ``FactoredMarket.from_snapshot``, which verifies the stored cluster
+        structure against a deterministic rebuild of the same scopes before
+        trusting the stored tables (see factored_market.py:809) — the same
+        "verify by rebuild, don't trust blindly" discipline the bayes engine
+        uses elsewhere. If that verification fails (structure mismatch, or
+        any other error reading the stored snapshot), we log a warning and
+        keep the seeds-only rebuild: traded prices are lost (marginals fall
+        back to seed priors) but orders/resolutions/voids are preserved
+        untouched, so settlement bookkeeping still works — this degraded
+        state is an accepted, documented fallback, not a crash.
+        """
+        liquidity = Decimal(str(data["liquidity"]))
+        max_width = int(data["maxWidth"])
+        treasury_account_id = int(data["treasuryAccountId"])
+
+        venue = cls(
+            risk_engine,
+            seeds,
+            liquidity=liquidity,
+            max_width=max_width,
+            _bootstrap_treasury=False,
+            _treasury_account_id=treasury_account_id,
+        )
+
+        fm_data = data.get("fm")
+        if fm_data is not None:
+            try:
+                venue._fm = FactoredMarket.from_snapshot(fm_data, max_width=max_width)
+            except Exception as err:  # noqa: BLE001 - deliberately broad, see docstring
+                logger.warning(
+                    "JointVenue.from_snapshot: fm snapshot failed structure "
+                    "verification (%s: %s); falling back to a fresh rebuild "
+                    "from seeds — traded prices are lost, orders are kept.",
+                    type(err).__name__, err,
+                )
+
+        venue._orders = [dict(order) for order in data.get("orders", [])]
+        venue._order_seq = int(data.get("orderSeq", 0))
+        venue._resolutions = dict(data.get("resolutions", {}))
+        venue._voided = set(data.get("voided", []))
+
+        venue._orders_by_var = {}
+        for order in venue._orders:
+            venue._orders_by_var.setdefault(order["variableId"], []).append(order)
+
+        for market_id, delta in data.get("marketStatus", {}).items():
+            record = venue._markets.get(market_id)
+            if record is not None:
+                venue._markets[market_id] = {**record, **delta}
+
+        return venue
 
     # -- internal bookkeeping --------------------------------------------
 

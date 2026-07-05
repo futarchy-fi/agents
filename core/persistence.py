@@ -153,7 +153,7 @@ def _load_market(d: dict) -> Market:
 # Schema versioning
 # ---------------------------------------------------------------------------
 
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 
 def _migrate_1_to_2(state: dict) -> dict:
@@ -170,7 +170,18 @@ def _migrate_2_to_3(state: dict) -> dict:
     return state
 
 
-_MIGRATIONS: dict[int, callable] = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
+def _migrate_3_to_4(state: dict) -> dict:
+    """Add venues section to snapshot (per-venue state, e.g. JointVenue)."""
+    state["venues"] = {}
+    state["version"] = 4
+    return state
+
+
+_MIGRATIONS: dict[int, callable] = {
+    1: _migrate_1_to_2,
+    2: _migrate_2_to_3,
+    3: _migrate_3_to_4,
+}
 
 
 def _apply_migrations(state: dict) -> dict:
@@ -192,10 +203,17 @@ def _apply_migrations(state: dict) -> dict:
 
 def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
                   path: str, auth_store=None,
-                  tracked_repos: dict | None = None) -> None:
+                  tracked_repos: dict | None = None,
+                  joint_venue=None) -> None:
     """
-    Save complete RE + ME + auth + tracked_repos state to a JSON file.
+    Save complete RE + ME + auth + tracked_repos + venues state to a JSON file.
     Atomic: writes to .tmp then renames.
+
+    ``joint_venue``, if given, is a ``venues.joint.venue.JointVenue`` whose
+    ``.snapshot()`` is stored under ``state["venues"]["joint"]``. Other venues
+    can add themselves to the same section the same way without touching
+    this function's signature further (a ``venues: dict | None`` mapping
+    would be the next step if a second venue shows up).
     """
     state = {
         "version": CURRENT_VERSION,
@@ -208,6 +226,9 @@ def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
             slug: _serialize(repo)
             for slug, repo in (tracked_repos or {}).items()
         },
+        "venues": (
+            {"joint": joint_venue.snapshot()} if joint_venue is not None else {}
+        ),
     }
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -285,10 +306,13 @@ def _load_tracked_repos(data: dict) -> dict[str, TrackedRepo]:
 
 def load_snapshot(path: str) -> tuple:
     """
-    Load RE + ME + auth + tracked_repos state from a JSON snapshot.
+    Load RE + ME + auth + tracked_repos + venues state from a JSON snapshot.
     Applies migrations automatically if the snapshot is an older version.
-    Returns (risk_engine, market_engine, auth_store, tracked_repos) ready to use.
-    auth_store is None if the auth module is not available.
+    Returns (risk_engine, market_engine, auth_store, tracked_repos, venues)
+    ready to use. auth_store is None if the auth module is not available.
+    ``venues`` is the raw ``state["venues"]`` dict (e.g. ``venues["joint"]``
+    is the payload to hand to ``JointVenue.from_snapshot``) — callers that
+    don't run a venue yet can ignore it.
     """
     with open(path) as f:
         state = json.load(f)
@@ -320,4 +344,7 @@ def load_snapshot(path: str) -> tuple:
     # Restore tracked repos
     tracked_repos = _load_tracked_repos(state.get("tracked_repos", {}))
 
-    return risk, me, auth_store, tracked_repos
+    # Venues section is opaque here — each venue owns its own from_snapshot.
+    venues = state.get("venues", {})
+
+    return risk, me, auth_store, tracked_repos, venues

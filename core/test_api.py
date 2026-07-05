@@ -1096,7 +1096,7 @@ class TestPersistence:
 
         # Reload state from disk
         from core.persistence import load_snapshot
-        risk, me, auth_store, tracked_repos = load_snapshot("/tmp/futarchy_test_state.json")
+        risk, me, auth_store, tracked_repos, _venues = load_snapshot("/tmp/futarchy_test_state.json")
 
         # Verify market exists
         assert mid in me.markets
@@ -1516,7 +1516,7 @@ class TestExpiredMarketReconciliation:
             async with api_module.lifespan(app):
                 assert app.state.me.markets[market.id].status == "void"
 
-            _, loaded_me, _, _ = load_snapshot(str(state_path))
+            _, loaded_me, _, _, _ = load_snapshot(str(state_path))
             assert loaded_me.markets[market.id].status == "void"
             assert loaded_me.markets[market.id].resolved_at is not None
         finally:

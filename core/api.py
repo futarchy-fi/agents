@@ -84,7 +84,7 @@ MARKET_EXPIRY_CHECK_INTERVAL_SECONDS = float(
 async def lifespan(app: FastAPI):
     # Load state
     if os.path.exists(STATE_PATH):
-        risk, me, auth_store, tracked_repos = load_snapshot(STATE_PATH)
+        risk, me, auth_store, tracked_repos, _venues = load_snapshot(STATE_PATH)
     else:
         reset_counters()
         risk = RiskEngine()
