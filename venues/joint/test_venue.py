@@ -3,7 +3,14 @@ from decimal import Decimal
 import pytest
 
 from core.risk_engine import RiskEngine
-from venues.joint.venue import JointVenue, UnknownMarket, UnknownVariable
+from venues.joint.msr import stake_for_edit
+from venues.joint.venue import (
+    InsufficientCredits,
+    JointVenue,
+    UnknownMarket,
+    UnknownVariable,
+    WidthBudgetExceeded,
+)
 
 # Seeds-v1 shape per data/seeds_takeoff.json: "markets" is a dict keyed by
 # market id, and "conditionalMarginals" is a top-level dict keyed by market
@@ -87,3 +94,111 @@ def test_vb_lock_market_id_is_stable_offset():
     venue = _make_venue()
     assert venue._vb_lock_market_id("gcx_b") == 1_000_001
     assert venue._vb_lock_market_id("gcx_a") == 1_000_000
+
+
+# -- place_edit / preview_edit ------------------------------------------
+
+
+def _fund(engine: RiskEngine, amount: Decimal) -> int:
+    account = engine.create_account()
+    engine.mint(account.id, amount)
+    return account.id
+
+
+def test_place_edit_freezes_exact_worst_case_stake():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+    before = venue.marginal("gcx_a")["yes"]
+
+    order = venue.place_edit(account_id, "gcx_a", "yes", 0.8)
+
+    expected_stake = stake_for_edit(Decimal("50"), before, 0.8)
+    account = engine.get_account(account_id)
+    assert account.frozen_balance == expected_stake
+    assert account.available_balance == Decimal("1000") - expected_stake
+    assert order["stake"] == str(expected_stake)
+    assert order["orderId"] == "vb_1"
+    assert order["lockId"] is not None
+
+
+def test_place_edit_moves_marginal_and_reprices_child_coherently():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+
+    venue.place_edit(account_id, "gcx_a", "yes", 0.8)
+
+    assert venue.marginal("gcx_a")["yes"] == pytest.approx(0.8, abs=1e-9)
+    assert venue.get_market("g2")["marginals"]["yes"] == pytest.approx(
+        0.8 * 0.9 + 0.2 * 0.2, abs=1e-6
+    )
+
+
+def test_place_edit_insufficient_credits_leaves_no_state_change():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    before = venue.marginal("gcx_a")["yes"]
+    expected_stake = stake_for_edit(Decimal("50"), before, 0.8)
+    account_id = _fund(engine, expected_stake - Decimal("0.01"))
+
+    with pytest.raises(InsufficientCredits):
+        venue.place_edit(account_id, "gcx_a", "yes", 0.8)
+
+    account = engine.get_account(account_id)
+    assert account.frozen_balance == Decimal("0")
+    assert venue.marginal("gcx_a")["yes"] == pytest.approx(before, abs=1e-9)
+    assert venue._orders == []
+
+
+def test_place_edit_conditional_context_leaves_parent_unchanged():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+    parent_before = venue.marginal("gcx_a")["yes"]
+
+    order = venue.place_edit(
+        account_id, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"}
+    )
+
+    assert order["context"] == {"gcx_a": "yes"}
+    assert venue.marginal("gcx_a")["yes"] == pytest.approx(parent_before, abs=1e-9)
+
+
+def test_preview_edit_is_idempotent_and_side_effect_free():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+
+    first = venue.preview_edit(account_id, "gcx_a", "yes", 0.8)
+    second = venue.preview_edit(account_id, "gcx_a", "yes", 0.8)
+
+    assert first == second
+    assert venue.marginal("gcx_a")["yes"] == pytest.approx(0.6, abs=1e-9)
+    account = engine.get_account(account_id)
+    assert account.frozen_balance == Decimal("0")
+    assert account.available_balance == Decimal("1000")
+    assert venue._orders == []
+
+
+def test_place_edit_width_budget_rollback(monkeypatch):
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+    before = venue.marginal("gcx_a")["yes"]
+
+    from venues.joint.inference import JointMarketError
+
+    def _boom(*args, **kwargs):
+        raise JointMarketError("forced")
+
+    monkeypatch.setattr(venue._fm, "trade_to_probability", _boom)
+
+    with pytest.raises(WidthBudgetExceeded):
+        venue.place_edit(account_id, "gcx_a", "yes", 0.8)
+
+    account = engine.get_account(account_id)
+    assert account.frozen_balance == Decimal("0")
+    assert account.available_balance == Decimal("1000")
+    assert venue.marginal("gcx_a")["yes"] == pytest.approx(before, abs=1e-9)
+    assert venue._orders == []
