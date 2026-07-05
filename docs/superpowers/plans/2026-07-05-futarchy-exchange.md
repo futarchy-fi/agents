@@ -166,14 +166,22 @@ def _validate(p: float, q: float) -> None:
     if not (0.0 < p < 1.0 and 0.0 < q < 1.0):
         raise ValueError("probabilities must be strictly inside (0, 1)")
 
+def _raw_payouts(b: Decimal, p: float, q: float) -> tuple[float, float]:
+    # Stake and payout MUST derive from these same floats: computing
+    # ln(p/q) separately from -ln(q/p) drifts across a rounding tick at
+    # large b and breaks stake >= -payout (found in review, task 2).
+    scale = float(b)
+    return scale * math.log(q / p), scale * math.log((1 - q) / (1 - p))
+
 def stake_for_edit(b: Decimal, p: float, q: float) -> Decimal:
     _validate(p, q)
-    worst = max(math.log(p / q), math.log((1 - p) / (1 - q)), 0.0)
-    return _round_up(float(b) * worst)
+    raw_won, raw_lost = _raw_payouts(b, p, q)
+    return _round_up(max(-raw_won, -raw_lost, 0.0))
 
 def payout_for_edit(b: Decimal, p: float, q: float, won: bool) -> Decimal:
     _validate(p, q)
-    raw = float(b) * (math.log(q / p) if won else math.log((1 - q) / (1 - p)))
+    raw_won, raw_lost = _raw_payouts(b, p, q)
+    raw = raw_won if won else raw_lost
     return _round_down(raw) if raw >= 0 else -_round_up(-raw)
 ```
 
