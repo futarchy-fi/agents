@@ -3,14 +3,17 @@ from decimal import Decimal
 import pytest
 
 from core.risk_engine import RiskEngine
-from venues.joint.msr import stake_for_edit
+from venues.joint.msr import payout_for_edit, stake_for_edit
 from venues.joint.venue import (
     InsufficientCredits,
     JointVenue,
     UnknownMarket,
     UnknownVariable,
+    VenueError,
     WidthBudgetExceeded,
 )
+
+B = Decimal("50")
 
 # Seeds-v1 shape per data/seeds_takeoff.json: "markets" is a dict keyed by
 # market id, and "conditionalMarginals" is a top-level dict keyed by market
@@ -202,3 +205,241 @@ def test_place_edit_width_budget_rollback(monkeypatch):
     assert account.available_balance == Decimal("1000")
     assert venue.marginal("gcx_a")["yes"] == pytest.approx(before, abs=1e-9)
     assert venue._orders == []
+
+
+# -- settlement: resolve_variable / void_variable -------------------------
+
+
+class TestSettlement:
+    def _setup(self) -> tuple[RiskEngine, JointVenue]:
+        engine = RiskEngine()
+        venue = JointVenue(engine, TINY_SEEDS)
+        return engine, venue
+
+    @staticmethod
+    def _total(engine: RiskEngine, account_id: int) -> Decimal:
+        acc = engine.get_account(account_id)
+        return acc.available_balance + acc.frozen_balance
+
+    # (a) winner
+    def test_winner_gets_exact_log_score_payout_from_treasury(self):
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+        before = venue.marginal("gcx_a")["yes"]
+
+        order = venue.place_edit(aid, "gcx_a", "yes", 0.8)
+        result = venue.resolve_variable("gcx_a", "yes")
+
+        payout = payout_for_edit(B, before, 0.8, True)
+        assert payout > 0
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000") + payout
+        assert acc.frozen_balance == Decimal("0")
+        treasury = engine.get_account(venue.treasury_account_id)
+        assert treasury.available_balance == Decimal("1000000") - payout
+        assert order["status"] == "settled"
+        assert order["payout"] == str(payout)
+        assert result["settled"] == [order["orderId"]]
+        assert result["calledOff"] == []
+        assert result["awaiting"] == []
+        assert result["treasuryDelta"] == str(-payout)
+
+    # (b) loser
+    def test_loser_pays_at_most_stake_to_treasury(self):
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+        before = venue.marginal("gcx_a")["yes"]
+
+        order = venue.place_edit(aid, "gcx_a", "yes", 0.8)
+        stake = Decimal(order["stake"])
+        result = venue.resolve_variable("gcx_a", "no")
+
+        payout = payout_for_edit(B, before, 0.8, False)
+        assert payout < 0
+        assert -payout <= stake
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000") + payout
+        assert acc.frozen_balance == Decimal("0")
+        treasury = engine.get_account(venue.treasury_account_id)
+        assert treasury.available_balance == Decimal("1000000") - payout
+        assert order["status"] == "settled"
+        assert order["payout"] == str(payout)
+        assert result["settled"] == [order["orderId"]]
+        assert result["treasuryDelta"] == str(-payout)
+
+    # (c) called off by contradicted context
+    def test_contradicted_context_calls_off_with_full_stake_back(self):
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+
+        order = venue.place_edit(aid, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+        result = venue.resolve_variable("gcx_a", "no")
+
+        assert order["status"] == "called_off"
+        assert result["calledOff"] == [order["orderId"]]
+        assert result["settled"] == []
+        assert result["treasuryDelta"] == str(Decimal("0"))
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000")
+        assert acc.frozen_balance == Decimal("0")
+        treasury = engine.get_account(venue.treasury_account_id)
+        assert treasury.available_balance == Decimal("1000000")
+
+        # Resolving the order's own variable later has no further effect.
+        result2 = venue.resolve_variable("gcx_b", "yes")
+        assert result2["settled"] == []
+        assert result2["calledOff"] == []
+        assert order["status"] == "called_off"
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000")
+        assert engine.get_account(venue.treasury_account_id).available_balance == (
+            Decimal("1000000")
+        )
+
+    # (d) conservation across a 3-trader mix
+    def test_conservation_three_traders_full_resolution(self):
+        engine, venue = self._setup()
+        t1 = _fund(engine, Decimal("1000"))
+        t2 = _fund(engine, Decimal("1000"))
+        t3 = _fund(engine, Decimal("1000"))
+
+        venue.place_edit(t1, "gcx_a", "yes", 0.8)
+        venue.place_edit(t2, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+        venue.place_edit(t3, "gcx_b", "no", 0.6)
+
+        venue.resolve_variable("gcx_a", "yes")
+        venue.resolve_variable("gcx_b", "no")
+
+        for order in venue._orders:
+            assert order["status"] == "settled"
+        total = sum(
+            (self._total(engine, aid) for aid in (t1, t2, t3)),
+            self._total(engine, venue.treasury_account_id),
+        )
+        assert total == Decimal("3000") + Decimal("1000000")
+        for aid in (t1, t2, t3):
+            assert engine.get_account(aid).frozen_balance == Decimal("0")
+
+    # (e) void makes everyone whole
+    def test_void_calls_off_direct_and_context_orders(self):
+        engine, venue = self._setup()
+        t1 = _fund(engine, Decimal("1000"))
+        t2 = _fund(engine, Decimal("1000"))
+
+        o1 = venue.place_edit(t1, "gcx_a", "yes", 0.8)
+        o2 = venue.place_edit(t2, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+
+        result = venue.void_variable("gcx_a")
+
+        assert set(result["calledOff"]) == {o1["orderId"], o2["orderId"]}
+        assert o1["status"] == "called_off"
+        assert o2["status"] == "called_off"
+        for aid in (t1, t2):
+            acc = engine.get_account(aid)
+            assert acc.available_balance == Decimal("1000")
+            assert acc.frozen_balance == Decimal("0")
+        assert engine.get_account(venue.treasury_account_id).available_balance == (
+            Decimal("1000000")
+        )
+
+    # (f1) context resolves first (satisfied), variable later
+    def test_deferred_context_satisfied_then_variable_settles(self):
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+
+        order = venue.place_edit(aid, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+        stake = Decimal(order["stake"])
+        before = order["before"]
+
+        r1 = venue.resolve_variable("gcx_a", "yes")
+        assert order["status"] == "open"
+        assert order["remainingContext"] == {}
+        assert r1["settled"] == []
+        assert r1["calledOff"] == []
+        assert r1["awaiting"] == []
+        acc = engine.get_account(aid)
+        assert acc.frozen_balance == stake
+
+        r2 = venue.resolve_variable("gcx_b", "no")
+        payout = payout_for_edit(B, before, 0.5, False)
+        assert order["status"] == "settled"
+        assert order["payout"] == str(payout)
+        assert r2["settled"] == [order["orderId"]]
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000") + payout
+        assert acc.frozen_balance == Decimal("0")
+
+    # (f2) variable resolves first -> awaiting_context, settles on context
+    def test_deferred_variable_first_awaits_context_then_settles(self):
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+
+        order = venue.place_edit(aid, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+        stake = Decimal(order["stake"])
+        before = order["before"]
+
+        r1 = venue.resolve_variable("gcx_b", "yes")
+        assert order["status"] == "awaiting_context"
+        assert r1["awaiting"] == [order["orderId"]]
+        assert r1["settled"] == []
+        assert r1["calledOff"] == []
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000") - stake
+        assert acc.frozen_balance == stake
+
+        r2 = venue.resolve_variable("gcx_a", "yes")
+        payout = payout_for_edit(B, before, 0.5, True)
+        assert order["status"] == "settled"
+        assert order["payout"] == str(payout)
+        assert r2["settled"] == [order["orderId"]]
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000") + payout
+        assert acc.frozen_balance == Decimal("0")
+
+    # (f2 mirror) variable first, context then contradicted -> called off
+    def test_deferred_variable_first_then_contradicted_context_calls_off(self):
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+
+        order = venue.place_edit(aid, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+
+        venue.resolve_variable("gcx_b", "yes")
+        assert order["status"] == "awaiting_context"
+
+        r2 = venue.resolve_variable("gcx_a", "no")
+        assert order["status"] == "called_off"
+        assert r2["calledOff"] == [order["orderId"]]
+        assert r2["settled"] == []
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000")
+        assert acc.frozen_balance == Decimal("0")
+        assert engine.get_account(venue.treasury_account_id).available_balance == (
+            Decimal("1000000")
+        )
+
+    # (g) lifecycle guards
+    def test_double_resolve_and_resolve_after_void_raise(self):
+        engine, venue = self._setup()
+
+        venue.resolve_variable("gcx_a", "yes")
+        with pytest.raises(VenueError):
+            venue.resolve_variable("gcx_a", "yes")
+        with pytest.raises(VenueError):
+            venue.resolve_variable("gcx_a", "no")
+        with pytest.raises(VenueError):
+            venue.void_variable("gcx_a")
+
+        venue.void_variable("gcx_b")
+        with pytest.raises(VenueError):
+            venue.resolve_variable("gcx_b", "yes")
+        with pytest.raises(VenueError):
+            venue.void_variable("gcx_b")
+
+    def test_resolve_unknown_variable_and_bad_outcome(self):
+        _, venue = self._setup()
+        with pytest.raises(UnknownVariable):
+            venue.resolve_variable("nope", "yes")
+        with pytest.raises(UnknownVariable):
+            venue.void_variable("nope")
+        with pytest.raises(VenueError):
+            venue.resolve_variable("gcx_a", "maybe")

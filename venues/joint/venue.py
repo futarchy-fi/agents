@@ -23,7 +23,7 @@ from typing import Any, Mapping
 
 from core.risk_engine import RiskEngine
 from venues.joint.inference import FactoredMarket, JointMarketError, build_network_nodes
-from venues.joint.msr import stake_for_edit
+from venues.joint.msr import payout_for_edit, stake_for_edit
 
 TREASURY_SEED = Decimal("1000000")
 
@@ -94,6 +94,9 @@ class JointVenue:
         self._orders: list[dict[str, Any]] = []
         self._orders_by_var: dict[str, list[dict[str, Any]]] = {}
         self._order_seq: int = 0
+
+        self._resolutions: dict[str, str] = {}
+        self._voided: set[str] = set()
 
     @staticmethod
     def _load_seeds(seeds_path: str | Path | dict) -> dict:
@@ -216,6 +219,130 @@ class JointVenue:
         self._orders.append(order)
         self._orders_by_var.setdefault(variable_id, []).append(order)
         return order
+
+    # -- settlement -------------------------------------------------------
+
+    def _settlement_market(self, variable_id: str) -> tuple[str, dict[str, Any]]:
+        """(market_id, record) for a variable that may still resolve/void."""
+        market_id = self._var_to_market.get(variable_id)
+        if market_id is None:
+            raise UnknownVariable(variable_id)
+        if variable_id in self._resolutions:
+            raise VenueError(f"variable already resolved: {variable_id}")
+        if variable_id in self._voided:
+            raise VenueError(f"variable already voided: {variable_id}")
+        return market_id, self._markets[market_id]
+
+    def _call_off(self, order: dict[str, Any]) -> None:
+        """Return the full frozen stake and retire the order."""
+        self._risk_engine.release_lock(order["lockId"])
+        order["status"] = "called_off"
+
+    def resolve_variable(self, variable_id: str, outcome_id: str) -> dict[str, Any]:
+        """Resolve ``variable_id`` to ``outcome_id`` and settle affected orders.
+
+        Conditions the joint on the outcome, then walks every open /
+        awaiting_context order once, in placement order:
+
+        - contradicted context -> called off (full stake back);
+        - satisfied context key -> consumed, order stays in play;
+        - order on the resolved variable -> win/loss recorded;
+        - recorded win/loss + empty remaining context -> settled at the
+          log-score payout against the treasury;
+        - recorded win/loss + pending context -> awaiting_context (settles
+          when a later resolution empties the context).
+        """
+        market_id, record = self._settlement_market(variable_id)
+        if outcome_id not in {o["id"] for o in record["outcomes"]}:
+            raise VenueError(f"unknown outcome: {outcome_id}")
+
+        self._fm.condition(variable_id, outcome_id)
+        self._resolutions[variable_id] = outcome_id
+        # Copy-on-write: seed records may be shared with the caller's dict.
+        self._markets[market_id] = {
+            **record, "status": "resolved", "resolvedOutcome": outcome_id,
+        }
+
+        settled: list[str] = []
+        called_off: list[str] = []
+        awaiting: list[str] = []
+        treasury_delta = Decimal("0")
+
+        for order in self._orders:
+            if order["status"] not in ("open", "awaiting_context"):
+                continue
+
+            remaining = order["remainingContext"]
+            if variable_id in remaining:
+                if remaining[variable_id] != outcome_id:
+                    self._call_off(order)
+                    called_off.append(order["orderId"])
+                    continue
+                del remaining[variable_id]
+
+            if order["variableId"] == variable_id:
+                order["resolvedWon"] = outcome_id == order["outcomeId"]
+
+            if "resolvedWon" in order and not remaining:
+                payout = payout_for_edit(
+                    self._liquidity, order["before"], order["target"],
+                    order["resolvedWon"],
+                )
+                self._risk_engine.release_lock(order["lockId"])
+                if payout > 0:
+                    self._risk_engine.transfer_available(
+                        self.treasury_account_id, order["accountId"], payout,
+                        market_id=self._vb_lock_market_id(order["variableId"]),
+                        reason="msr_settlement",
+                    )
+                    treasury_delta -= payout
+                elif payout < 0:
+                    # Covered by construction: stake >= -payout was frozen
+                    # for this order and released just above.
+                    self._risk_engine.transfer_available(
+                        order["accountId"], self.treasury_account_id, -payout,
+                        market_id=self._vb_lock_market_id(order["variableId"]),
+                        reason="msr_settlement",
+                    )
+                    treasury_delta += -payout
+                order["status"] = "settled"
+                order["payout"] = str(payout)
+                settled.append(order["orderId"])
+            elif "resolvedWon" in order:
+                order["status"] = "awaiting_context"
+                awaiting.append(order["orderId"])
+
+        return {
+            "settled": settled,
+            "calledOff": called_off,
+            "awaiting": awaiting,
+            "treasuryDelta": str(treasury_delta),
+        }
+
+    def void_variable(self, variable_id: str) -> dict[str, Any]:
+        """Void ``variable_id``: call off every bet it could have decided.
+
+        Does NOT condition the joint. Calls off every open/awaiting order
+        placed on the variable or conditioned on it (a context that can
+        never be decided), returning each full stake.
+        """
+        market_id, record = self._settlement_market(variable_id)
+
+        self._voided.add(variable_id)
+        self._markets[market_id] = {**record, "status": "void"}
+
+        called_off: list[str] = []
+        for order in self._orders:
+            if order["status"] not in ("open", "awaiting_context"):
+                continue
+            if (
+                order["variableId"] == variable_id
+                or variable_id in order["remainingContext"]
+            ):
+                self._call_off(order)
+                called_off.append(order["orderId"])
+
+        return {"calledOff": called_off}
 
     # -- internal bookkeeping --------------------------------------------
 
