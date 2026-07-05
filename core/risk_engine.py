@@ -33,6 +33,12 @@ class RiskEngine:
     def __init__(self):
         self.accounts: dict[int, Account] = {}
         self.transactions: list[Transaction] = []
+        # Sum of mint deltas that have been compacted out of ``transactions``
+        # (see compact_transactions). total_minted() adds this back so the
+        # money-conservation figure survives log compaction. Zero until the
+        # first compaction; snapshots predating this field load it as zero,
+        # which is correct because they still carry the full mint history.
+        self._minted_base: Decimal = ZERO
 
     def create_account(self, balance: Decimal = ZERO) -> Account:
         acc = Account.new(available_balance=balance)
@@ -288,12 +294,78 @@ class RiskEngine:
         return acc.available_balance >= amount
 
     def total_minted(self) -> Decimal:
-        """Sum of all mint transactions. The total money in the system."""
-        return sum(
+        """Sum of all mint transactions. The total money in the system.
+
+        ``_minted_base`` covers mints already compacted out of the log; the
+        sum below covers mints still present. Together they equal the sum
+        over every mint that ever happened.
+        """
+        return self._minted_base + sum(
             (tx.available_delta for tx in self.transactions
              if tx.reason == "mint"),
             ZERO,
         )
+
+    # ------------------------------------------------------------------
+    # Transaction-log compaction (bounds snapshot growth — I4)
+    # ------------------------------------------------------------------
+
+    def compact_transactions(self, keep_recent: int) -> int:
+        """Collapse all but the most recent ``keep_recent`` transactions into
+        one synthetic 'checkpoint' entry per affected account.
+
+        The transaction log is append-only and is rewritten in full on every
+        snapshot, so without a ceiling the state file grows without bound and
+        each save costs O(n). Compaction bounds it while preserving the two
+        things anything reads the log for:
+
+        - Per-account running balances: ``_build_account_activity`` sums
+          deltas from zero, so each checkpoint carries the SUM of that
+          account's dropped ``(available_delta, frozen_delta)`` — the running
+          balance at every retained entry is bit-identical to before.
+        - ``total_minted()``: dropped mint deltas fold into ``_minted_base``.
+
+        A checkpoint reuses the id and timestamp of the last dropped tx for
+        its account, so ids stay monotonic with recency (the activity cursor
+        relies on that) and the entry reads as of the cut-off time.
+
+        Returns the number of transactions dropped.
+        """
+        n = len(self.transactions)
+        if keep_recent < 0 or n <= keep_recent:
+            return 0
+        cutoff = n - keep_recent
+        dropped = self.transactions[:cutoff]
+        retained = self.transactions[cutoff:]
+
+        agg: dict[int, dict] = {}
+        order: list[int] = []
+        for tx in dropped:
+            if tx.reason == "mint":
+                self._minted_base += tx.available_delta
+            a = agg.get(tx.account_id)
+            if a is None:
+                a = {"avail": ZERO, "frozen": ZERO}
+                agg[tx.account_id] = a
+                order.append(tx.account_id)
+            a["avail"] += tx.available_delta
+            a["frozen"] += tx.frozen_delta
+            a["id"] = tx.id            # last (highest) dropped id for account
+            a["at"] = tx.created_at    # last dropped timestamp
+
+        checkpoints = [
+            Transaction(
+                id=agg[aid]["id"],
+                account_id=aid,
+                available_delta=agg[aid]["avail"],
+                frozen_delta=agg[aid]["frozen"],
+                reason="checkpoint",
+                created_at=agg[aid]["at"],
+            )
+            for aid in order
+        ]
+        self.transactions = checkpoints + retained
+        return cutoff
 
     # ------------------------------------------------------------------
     # Internal

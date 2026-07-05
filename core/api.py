@@ -90,6 +90,14 @@ MARKET_EXPIRY_CHECK_INTERVAL_SECONDS = float(
     os.environ.get("MARKET_EXPIRY_CHECK_INTERVAL_SECONDS", "60")
 )
 
+# Transaction-log compaction (I4): once the append-only log exceeds
+# TX_LOG_CEILING entries, _save() compacts it down to the most recent
+# TX_LOG_KEEP (see RiskEngine.compact_transactions), bounding snapshot size
+# and per-save cost. Generous defaults so compaction is rare and users keep
+# ample activity history. Set TX_LOG_CEILING=0 to disable.
+TX_LOG_CEILING = int(os.environ.get("TX_LOG_CEILING", "50000"))
+TX_LOG_KEEP = int(os.environ.get("TX_LOG_KEEP", "25000"))
+
 
 def _build_joint_venue(risk: RiskEngine, seeds_path: str, joint_data: dict | None):
     """Restore the joint venue from a persisted snapshot, or build it fresh.
@@ -188,6 +196,8 @@ def _save():
     a save with the venue disabled never erases previously-persisted venue
     state (see save_snapshot's ``venues`` kwarg).
     """
+    if TX_LOG_CEILING and len(app.state.risk.transactions) > TX_LOG_CEILING:
+        app.state.risk.compact_transactions(TX_LOG_KEEP)
     save_snapshot(app.state.risk, app.state.me, STATE_PATH,
                   auth_store=app.state.auth_store,
                   tracked_repos=app.state.tracked_repos,
@@ -220,6 +230,8 @@ def _activity_summary(tx, market, outcome: str | None) -> str:
 
     if reason == "mint":
         return "Initial credits"
+    if reason == "checkpoint":
+        return "Opening balance (older history compacted)"
 
     if reason.startswith("lock:position:"):
         return f"Bought {outcome_label}"

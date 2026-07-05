@@ -235,6 +235,7 @@ def save_snapshot(risk: RiskEngine, market_engine: MarketEngine,
         "counters": dict(_counters),
         "accounts": [_serialize(acc) for acc in risk.accounts.values()],
         "transactions": [_serialize(tx) for tx in risk.transactions],
+        "mintedBase": str(risk._minted_base),
         "markets": [_serialize(m) for m in market_engine.markets.values()],
         "auth": _serialize_auth(auth_store) if auth_store else {"users": []},
         "tracked_repos": {
@@ -348,6 +349,9 @@ def load_snapshot(path: str) -> tuple:
         risk.accounts[acc.id] = acc
 
     risk.transactions = [_load_transaction(t) for t in state["transactions"]]
+    # Pre-compaction snapshots lack mintedBase; they still carry the full
+    # mint history, so a zero base keeps total_minted() correct.
+    risk._minted_base = Decimal(state.get("mintedBase", "0"))
 
     # Restore market engine
     me = MarketEngine(risk)
