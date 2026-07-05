@@ -1,5 +1,5 @@
 """
-Auth dependencies and rate limiting middleware.
+Auth dependencies, rate limiting, CORS, and body-size hardening middleware.
 """
 
 import os
@@ -7,6 +7,8 @@ import time
 from typing import Annotated
 
 from fastapi import Depends, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
 from core.api_errors import APIError
 from core.auth import User
@@ -122,3 +124,153 @@ async def require_admin(request: Request) -> None:
 AuthUser = Annotated[User, Depends(require_auth)]
 AdminDep = Annotated[None, Depends(require_admin)]
 OptionalUser = Annotated[User | None, Depends(optional_auth)]
+
+
+# ---------------------------------------------------------------------------
+# CORS (Task B6)
+# ---------------------------------------------------------------------------
+
+CORS_ALLOWED_METHODS = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+CORS_ALLOWED_HEADERS = ["Authorization", "Content-Type"]
+
+
+def _cors_origins() -> list[str]:
+    """Parse CORS_ORIGINS (comma-separated) from the environment.
+
+    Default is ``"*"``. Read fresh on every call (not cached at import
+    time) so tests can flip the env var per-test against the single
+    module-level ``app`` instance — the same technique already used for
+    ``ADMIN_KEY``/``RATE_LIMIT_PER_MIN`` elsewhere in this module, except
+    those two are read once at import while this one is read live because
+    CORS behavior needs to vary per-request in tests.
+    """
+    raw = os.environ.get("CORS_ORIGINS", "*")
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    return origins or ["*"]
+
+
+class DynamicCORSMiddleware:
+    """Thin pure-ASGI wrapper around Starlette's ``CORSMiddleware`` that
+    re-reads ``CORS_ORIGINS`` from the environment on every request instead
+    of baking it into the middleware stack at app-construction time.
+
+    Starlette's ``CORSMiddleware`` computes all its response headers once,
+    in ``__init__``, from whatever ``allow_origins``/``allow_credentials``
+    it's given. Baking that in at import time would make ``CORS_ORIGINS``
+    untestable without rebuilding the whole ASGI middleware stack (which
+    Starlette explicitly forbids once the app has started). Reconstructing
+    a real ``CORSMiddleware`` per request keeps the actual CORS logic
+    delegated to Starlette while keeping the origin list live.
+
+    When the resolved origin list is exactly ``["*"]``, credentials are
+    forced off — Starlette (and browsers) treat
+    ``Access-Control-Allow-Origin: *`` combined with
+    ``Access-Control-Allow-Credentials: true`` as unsafe/invalid.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        origins = _cors_origins()
+        allow_credentials = origins != ["*"]
+        cors = CORSMiddleware(
+            self.app,
+            allow_origins=origins,
+            allow_credentials=allow_credentials,
+            allow_methods=CORS_ALLOWED_METHODS,
+            allow_headers=CORS_ALLOWED_HEADERS,
+        )
+        await cors(scope, receive, send)
+
+
+# ---------------------------------------------------------------------------
+# Request body size cap (Task B6)
+# ---------------------------------------------------------------------------
+
+MAX_BODY_BYTES = 65536
+
+
+class _RequestBodyTooLarge(Exception):
+    """Internal signal raised from the wrapped ``receive()`` once the
+    accumulated body size crosses ``MAX_BODY_BYTES``. Caught only by
+    ``BodySizeLimitMiddleware`` itself — never seen by route handlers."""
+
+
+def _too_large_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={
+            "error": {
+                "code": "request_too_large",
+                "message": f"Request body exceeds the {MAX_BODY_BYTES}-byte limit",
+                "details": {},
+            }
+        },
+    )
+
+
+class BodySizeLimitMiddleware:
+    """Pure ASGI middleware (not ``BaseHTTPMiddleware`` — it never buffers
+    the body into memory) enforcing a hard cap on request body size via
+    two independent layers:
+
+    1. **Content-Length header.** If present and over the cap, reject
+       immediately with 413 before the request reaches routing, auth, or
+       any handler — the body is never read at all.
+    2. **Accumulated stream guard.** Wraps ``receive()`` and keeps a
+       running byte counter of ``http.request`` body chunks actually
+       delivered. If the count crosses the cap — e.g. a chunked request
+       with no (or a dishonest) Content-Length — it raises internally and
+       the middleware sends the 413 itself. Only a counter is kept; the
+       body is never accumulated in full.
+
+    Caveat, documented rather than hidden: the stream guard relies on its
+    internal exception propagating back up through the ASGI call stack to
+    this middleware before any response bytes have been sent downstream.
+    That holds for every route in this API — FastAPI/Starlette fully
+    drains and parses the request body during dependency resolution
+    before a handler runs, so nothing has been sent when the cap is
+    crossed. It would not hold for a hypothetical handler that starts
+    streaming a response before finishing reading the request body.
+    """
+
+    def __init__(self, app, max_bytes: int = MAX_BODY_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    too_big = int(value) > self.max_bytes
+                except ValueError:
+                    too_big = False
+                if too_big:
+                    await _too_large_response()(scope, receive, send)
+                    return
+                break
+
+        total = 0
+
+        async def guarded_receive():
+            nonlocal total
+            message = await receive()
+            if message["type"] == "http.request":
+                total += len(message.get("body", b""))
+                if total > self.max_bytes:
+                    raise _RequestBodyTooLarge()
+            return message
+
+        try:
+            await self.app(scope, guarded_receive, send)
+        except _RequestBodyTooLarge:
+            await _too_large_response()(scope, receive, send)

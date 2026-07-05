@@ -53,7 +53,10 @@ from core.auth import (
 )
 from core.lmsr import max_loss, prices as lmsr_prices, cost_to_move_price
 from core.market_engine import MarketEngine
-from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
+from core.middleware import (
+    AuthUser, AdminDep, require_auth, rate_limiter,
+    DynamicCORSMiddleware, BodySizeLimitMiddleware,
+)
 from core.models import ZERO, TrackedRepo, reset_counters
 from core.persistence import save_snapshot, load_snapshot
 from core.risk_engine import RiskEngine, InsufficientBalance
@@ -155,8 +158,26 @@ async def lifespan(app: FastAPI):
             await expiry_task
 
 
-app = FastAPI(title="Futarchy API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(
+    title="Futarchy Exchange API",
+    version="2.0.0",
+    description=(
+        "HTTP API for the Futarchy Exchange: independent per-market LMSR "
+        "trading (buy/sell) alongside the joint MSR net venue for staked "
+        "probability-edit orders across causally-linked variables."
+    ),
+    lifespan=lifespan,
+)
 app.add_exception_handler(APIError, api_error_handler)
+
+# Middleware order matters: Starlette's add_middleware() inserts each new
+# entry at the front of the stack, so the LAST one added ends up OUTERMOST
+# (runs first on the way in, last on the way out — see
+# Starlette.build_middleware_stack). CORS is added last so it wraps
+# everything, including 413s from the body-size guard and error responses
+# from deeper middleware/handlers.
+app.add_middleware(BodySizeLimitMiddleware)
+app.add_middleware(DynamicCORSMiddleware)
 
 
 def _save():
