@@ -3,10 +3,15 @@ from decimal import Decimal
 import pytest
 
 from core.risk_engine import RiskEngine
+from venues.joint.inference import JointMarketError
 from venues.joint.msr import payout_for_edit, stake_for_edit
 from venues.joint.venue import (
+    ContextContradicted,
     InsufficientCredits,
+    InvalidTarget,
     JointVenue,
+    MarketClosed,
+    TradeRejected,
     UnknownMarket,
     UnknownVariable,
     VenueError,
@@ -47,6 +52,26 @@ TINY_SEEDS = {
             "gcx_a=no": {"yes": 0.2, "no": 0.8},
         },
     },
+}
+
+
+# Same as TINY_SEEDS plus an independent root market gcx_c, unrelated to
+# gcx_a/gcx_b, used for tests needing an order with two independent
+# context keys (item-5 awaiting-transition tests).
+THREE_VAR_SEEDS = {
+    "version": "seeds-v1",
+    "markets": {
+        **TINY_SEEDS["markets"],
+        "g3": {
+            "id": "g3",
+            "variableId": "gcx_c",
+            "title": "C",
+            "description": "independent root market C",
+            "outcomes": [{"id": "yes", "name": "Yes"}, {"id": "no", "name": "No"}],
+            "marginals": {"yes": 0.5, "no": 0.5},
+        },
+    },
+    "conditionalMarginals": dict(TINY_SEEDS["conditionalMarginals"]),
 }
 
 
@@ -93,10 +118,33 @@ def test_marginal_unknown_raises():
         venue.marginal("nope")
 
 
+def test_marginal_context_contradicted_raises_not_unknown_variable():
+    """gcx_b is a KNOWN variable; a context that contradicts an already-
+    conditioned resolution makes fm.marginal return None for a structural
+    reason (zero probability), not because the variable is unknown."""
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    venue.resolve_variable("gcx_a", "no")
+
+    with pytest.raises(ContextContradicted):
+        venue.marginal("gcx_b", {"gcx_a": "yes"})
+
+
 def test_vb_lock_market_id_is_stable_offset():
     venue = _make_venue()
     assert venue._vb_lock_market_id("gcx_b") == 1_000_001
     assert venue._vb_lock_market_id("gcx_a") == 1_000_000
+
+
+def test_lock_ids_precomputed_as_a_dict():
+    venue = _make_venue()
+    assert venue._lock_ids == {"gcx_a": 1_000_000, "gcx_b": 1_000_001}
+
+
+def test_market_ids_returns_the_same_cached_list_object():
+    venue = _make_venue()
+    assert venue.market_ids() is venue.market_ids()
+    assert venue.market_ids() == ["g1", "g2"]
 
 
 # -- place_edit / preview_edit ------------------------------------------
@@ -177,11 +225,25 @@ def test_preview_edit_is_idempotent_and_side_effect_free():
     second = venue.preview_edit(account_id, "gcx_a", "yes", 0.8)
 
     assert first == second
+    assert isinstance(first["stake"], str)
     assert venue.marginal("gcx_a")["yes"] == pytest.approx(0.6, abs=1e-9)
     account = engine.get_account(account_id)
     assert account.frozen_balance == Decimal("0")
     assert account.available_balance == Decimal("1000")
     assert venue._orders == []
+
+
+def test_preview_edit_stake_matches_place_edit_stake_type_and_value():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+
+    preview = venue.preview_edit(account_id, "gcx_a", "yes", 0.8)
+    order = venue.place_edit(account_id, "gcx_a", "yes", 0.8)
+
+    assert isinstance(preview["stake"], str)
+    assert isinstance(order["stake"], str)
+    assert preview["stake"] == order["stake"]
 
 
 def test_place_edit_width_budget_rollback(monkeypatch):
@@ -190,10 +252,10 @@ def test_place_edit_width_budget_rollback(monkeypatch):
     account_id = _fund(engine, Decimal("1000"))
     before = venue.marginal("gcx_a")["yes"]
 
-    from venues.joint.inference import JointMarketError
-
     def _boom(*args, **kwargs):
-        raise JointMarketError("forced")
+        raise JointMarketError(
+            "belief structure would exceed the treewidth budget (forced)"
+        )
 
     monkeypatch.setattr(venue._fm, "trade_to_probability", _boom)
 
@@ -205,6 +267,184 @@ def test_place_edit_width_budget_rollback(monkeypatch):
     assert account.available_balance == Decimal("1000")
     assert venue.marginal("gcx_a")["yes"] == pytest.approx(before, abs=1e-9)
     assert venue._orders == []
+
+
+def test_place_edit_generic_joint_market_error_raises_trade_rejected(monkeypatch):
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+    before = venue.marginal("gcx_a")["yes"]
+
+    def _boom(*args, **kwargs):
+        raise JointMarketError("re-triangulation failed to cover the trade scope")
+
+    monkeypatch.setattr(venue._fm, "trade_to_probability", _boom)
+
+    with pytest.raises(TradeRejected):
+        venue.place_edit(account_id, "gcx_a", "yes", 0.8)
+
+    account = engine.get_account(account_id)
+    assert account.frozen_balance == Decimal("0")
+    assert account.available_balance == Decimal("1000")
+    assert venue.marginal("gcx_a")["yes"] == pytest.approx(before, abs=1e-9)
+    assert venue._orders == []
+
+
+def test_place_edit_degenerate_price_joint_market_error_raises_invalid_target(
+    monkeypatch,
+):
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+
+    def _boom(*args, **kwargs):
+        raise JointMarketError("price is degenerate; the event is already settled")
+
+    monkeypatch.setattr(venue._fm, "trade_to_probability", _boom)
+
+    with pytest.raises(InvalidTarget):
+        venue.place_edit(account_id, "gcx_a", "yes", 0.8)
+
+    account = engine.get_account(account_id)
+    assert account.frozen_balance == Decimal("0")
+    assert account.available_balance == Decimal("1000")
+    assert venue._orders == []
+
+
+def test_place_edit_degenerate_target_raises_invalid_target():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+
+    with pytest.raises(InvalidTarget):
+        venue.place_edit(account_id, "gcx_a", "yes", 1.0)
+
+    account = engine.get_account(account_id)
+    assert account.frozen_balance == Decimal("0")
+    assert account.available_balance == Decimal("1000")
+    assert venue._orders == []
+
+
+def test_preview_edit_degenerate_target_raises_invalid_target():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    account_id = _fund(engine, Decimal("1000"))
+
+    with pytest.raises(InvalidTarget):
+        venue.preview_edit(account_id, "gcx_a", "yes", 0.0)
+
+
+# -- lifecycle guards: place_edit / preview_edit on dead markets ----------
+
+
+class TestLifecycleGuards:
+    def _setup(self) -> tuple[RiskEngine, JointVenue]:
+        engine = RiskEngine()
+        venue = JointVenue(engine, TINY_SEEDS)
+        return engine, venue
+
+    def _assert_no_funds_or_state_moved(self, engine, venue, account_id):
+        account = engine.get_account(account_id)
+        assert account.frozen_balance == Decimal("0")
+        assert account.available_balance == Decimal("1000")
+        assert venue._orders == []
+
+    def test_place_edit_on_voided_variable_raises_market_closed(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.void_variable("gcx_a")
+
+        with pytest.raises(MarketClosed):
+            venue.place_edit(account_id, "gcx_a", "yes", 0.8)
+        self._assert_no_funds_or_state_moved(engine, venue, account_id)
+
+    def test_preview_edit_on_voided_variable_raises_market_closed(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.void_variable("gcx_a")
+
+        with pytest.raises(MarketClosed):
+            venue.preview_edit(account_id, "gcx_a", "yes", 0.8)
+
+    def test_place_edit_on_resolved_variable_raises_market_closed(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.resolve_variable("gcx_a", "yes")
+
+        with pytest.raises(MarketClosed):
+            venue.place_edit(account_id, "gcx_a", "no", 0.2)
+        self._assert_no_funds_or_state_moved(engine, venue, account_id)
+
+    def test_preview_edit_on_resolved_variable_raises_market_closed(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.resolve_variable("gcx_a", "yes")
+
+        with pytest.raises(MarketClosed):
+            venue.preview_edit(account_id, "gcx_a", "no", 0.2)
+
+    def test_place_edit_context_voided_raises_market_closed(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.void_variable("gcx_a")
+
+        with pytest.raises(MarketClosed):
+            venue.place_edit(account_id, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+        self._assert_no_funds_or_state_moved(engine, venue, account_id)
+
+    def test_preview_edit_context_voided_raises_market_closed(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.void_variable("gcx_a")
+
+        with pytest.raises(MarketClosed):
+            venue.preview_edit(
+                account_id, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"}
+            )
+
+    def test_place_edit_context_resolved_contradicted_raises_context_contradicted(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.resolve_variable("gcx_a", "no")
+
+        with pytest.raises(ContextContradicted):
+            venue.place_edit(account_id, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+        self._assert_no_funds_or_state_moved(engine, venue, account_id)
+
+    def test_preview_edit_context_resolved_contradicted_raises_context_contradicted(
+        self,
+    ):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.resolve_variable("gcx_a", "no")
+
+        with pytest.raises(ContextContradicted):
+            venue.preview_edit(
+                account_id, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"}
+            )
+
+    def test_place_edit_context_resolved_matching_strips_remaining_and_settles(self):
+        engine, venue = self._setup()
+        account_id = _fund(engine, Decimal("1000"))
+        venue.resolve_variable("gcx_a", "yes")
+
+        order = venue.place_edit(
+            account_id, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"}
+        )
+
+        # The order still records what it was placed against...
+        assert order["context"] == {"gcx_a": "yes"}
+        # ...but the already-resolved-matching key is stripped from the
+        # bookkeeping that drives future settlement.
+        assert order["remainingContext"] == {}
+
+        # before is P(gcx_b=yes | gcx_a=yes) under the conditioned joint,
+        # i.e. the CPT row (0.9), not the unconditioned mixture (0.62).
+        assert order["before"] == pytest.approx(0.9, abs=1e-6)
+
+        result = venue.resolve_variable("gcx_b", "no")
+        assert result["settled"] == [order["orderId"]]
+        assert order["status"] == "settled"
 
 
 # -- settlement: resolve_variable / void_variable -------------------------
@@ -416,6 +656,60 @@ class TestSettlement:
         assert engine.get_account(venue.treasury_account_id).available_balance == (
             Decimal("1000000")
         )
+
+    # (f3) void, not resolve, of the pending context while awaiting
+    def test_void_while_awaiting_context_calls_off_with_full_stake_back(self):
+        engine, venue = self._setup()
+        aid = _fund(engine, Decimal("1000"))
+
+        order = venue.place_edit(aid, "gcx_b", "yes", 0.5, context={"gcx_a": "yes"})
+        stake = Decimal(order["stake"])
+        assert stake > Decimal("0")
+
+        venue.resolve_variable("gcx_b", "yes")
+        assert order["status"] == "awaiting_context"
+        acc = engine.get_account(aid)
+        assert acc.frozen_balance == stake
+
+        result = venue.void_variable("gcx_a")
+
+        assert order["status"] == "called_off"
+        assert result["calledOff"] == [order["orderId"]]
+        acc = engine.get_account(aid)
+        assert acc.available_balance == Decimal("1000")
+        assert acc.frozen_balance == Decimal("0")
+        assert engine.get_account(venue.treasury_account_id).available_balance == (
+            Decimal("1000000")
+        )
+
+    # (f4) awaiting is only orders that transitioned THIS call, not every
+    # order that happens to still be awaiting_context afterward.
+    def test_awaiting_only_lists_orders_transitioning_this_call(self):
+        engine = RiskEngine()
+        venue = JointVenue(engine, THREE_VAR_SEEDS)
+        aid = _fund(engine, Decimal("1000"))
+
+        order = venue.place_edit(
+            aid, "gcx_b", "yes", 0.5, context={"gcx_a": "yes", "gcx_c": "yes"}
+        )
+
+        r1 = venue.resolve_variable("gcx_b", "yes")
+        assert order["status"] == "awaiting_context"
+        assert r1["awaiting"] == [order["orderId"]]
+
+        # Satisfies one of the two remaining context keys; order STAYS
+        # awaiting_context (one key still pending) rather than settling.
+        # It did not transition this call, so it must not be re-listed.
+        r2 = venue.resolve_variable("gcx_a", "yes")
+        assert order["status"] == "awaiting_context"
+        assert order["remainingContext"] == {"gcx_c": "yes"}
+        assert r2["awaiting"] == []
+        assert r2["settled"] == []
+
+        r3 = venue.resolve_variable("gcx_c", "yes")
+        assert order["status"] == "settled"
+        assert r3["settled"] == [order["orderId"]]
+        assert r3["awaiting"] == []
 
     # (g) lifecycle guards
     def test_double_resolve_and_resolve_after_void_raise(self):

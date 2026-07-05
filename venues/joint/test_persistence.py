@@ -21,7 +21,7 @@ from core.persistence import CURRENT_VERSION, load_snapshot, save_snapshot
 from core.risk_engine import RiskEngine
 from venues.joint.inference import JointMarketError
 from venues.joint.test_venue import TINY_SEEDS, _fund
-from venues.joint.venue import JointVenue
+from venues.joint.venue import JointVenue, VenueError
 
 
 # -- (a) full-fidelity roundtrip ------------------------------------------
@@ -167,3 +167,38 @@ def test_fm_bad_format_string_falls_back_too(caplog):
         twin = JointVenue.from_snapshot(data, engine, TINY_SEEDS)
 
     assert twin.marginal("gcx_a")["yes"] == pytest.approx(0.6, abs=1e-9)
+
+
+def test_fm_fallback_replays_resolutions_so_child_marginal_stays_conditioned(caplog):
+    """A snapshot taken AFTER gcx_a resolved to "yes", whose fm section then
+    fails structure verification, must not just fall back to the seed-prior
+    fm untouched — the fresh rebuild has to be re-conditioned on every
+    already-recorded resolution, or a resolved variable's children read
+    back at their unconditioned prior (0.62 here) instead of the correct
+    conditioned value (0.9)."""
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    venue.resolve_variable("gcx_a", "yes")
+
+    data = venue.snapshot()
+    corrupted_fm = dict(data["fm"])
+    del corrupted_fm["tradeScopes"]
+    data = {**data, "fm": corrupted_fm}
+
+    with caplog.at_level(logging.WARNING):
+        twin = JointVenue.from_snapshot(data, engine, TINY_SEEDS)
+
+    assert twin.marginal("gcx_b")["yes"] == pytest.approx(0.9, abs=1e-6)
+
+
+# -- (d) eager treasury check ------------------------------------------------
+
+
+def test_from_snapshot_raises_when_treasury_account_missing():
+    engine = RiskEngine()
+    venue = JointVenue(engine, TINY_SEEDS)
+    data = venue.snapshot()
+
+    fresh_engine = RiskEngine()  # treasury account was never created here
+    with pytest.raises(VenueError):
+        JointVenue.from_snapshot(data, fresh_engine, TINY_SEEDS)

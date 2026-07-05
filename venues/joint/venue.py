@@ -60,6 +60,43 @@ class WidthBudgetExceeded(VenueError):
     """Raised when a probability edit is rejected by the junction-tree width budget."""
 
 
+class MarketClosed(VenueError):
+    """Raised when an edit targets, or is contexted on, a resolved or voided variable.
+
+    Rejecting these up front (before any lock is taken) is what keeps a bet
+    from freezing funds forever: a market that can never resolve can never
+    settle, so an edit against it must never be allowed to reach the risk
+    engine.
+    """
+
+
+class ContextContradicted(VenueError):
+    """Raised when a context is inconsistent with the current belief state.
+
+    Two cases share this exception: (1) a context key at edit time whose
+    requested outcome contradicts that variable's already-recorded
+    resolution, and (2) a query/trade whose context makes the relevant
+    probability mass zero under the joint (e.g. it conflicts with a
+    resolution already conditioned into the factored market). Both are a
+    logically-impossible context, not an "unknown variable".
+    """
+
+
+class InvalidTarget(VenueError):
+    """Raised when a target (or the current price) is degenerate.
+
+    Covers msr's own validation (`before`/`target` not strictly inside
+    (0, 1)) as well as a `trade_to_probability` price that's already
+    pinned to 0 or 1 under the given context (the event is already
+    effectively settled there).
+    """
+
+
+class TradeRejected(VenueError):
+    """Catch-all for a rejected trade_to_probability call that is neither a
+    width-budget failure nor a degenerate-price failure."""
+
+
 class JointVenue:
     """Venue B: a factored joint (Bayes-network) prediction market.
 
@@ -100,6 +137,20 @@ class JointVenue:
             for market_id, record in self._markets.items()
         }
 
+        # Markets never change post-construction in Plan A, so both of
+        # these are computed once here and never rebuilt: market_ids()
+        # returns this same list object (O(1)), and _vb_lock_market_id
+        # becomes an O(1) dict lookup instead of a market_ids() rebuild +
+        # linear .index() search on every call.
+        self._market_ids_list: list[str] = list(self._markets.keys())
+        _market_index = {
+            market_id: i for i, market_id in enumerate(self._market_ids_list)
+        }
+        self._lock_ids: dict[str, int] = {
+            variable_id: 1_000_000 + _market_index[market_id]
+            for variable_id, market_id in self._var_to_market.items()
+        }
+
         nodes = nodes_from_seeds(seeds)
         self._fm = FactoredMarket.from_nodes(
             nodes, liquidity=float(liquidity), max_width=max_width
@@ -133,8 +184,13 @@ class JointVenue:
     # -- read surface ---------------------------------------------------
 
     def market_ids(self) -> list[str]:
-        """Market ids in seed (insertion) order."""
-        return list(self._markets.keys())
+        """Market ids in seed (insertion) order.
+
+        Returns the same cached list object every call (O(1)) — markets
+        never change post-construction in Plan A, so there's nothing to
+        rebuild. Callers must not mutate the result.
+        """
+        return self._market_ids_list
 
     def get_market(self, market_id: str) -> dict[str, Any]:
         """Seed metadata for ``market_id`` merged with live marginals."""
@@ -148,10 +204,24 @@ class JointVenue:
     def marginal(
         self, variable_id: str, context: dict[str, str] | None = None
     ) -> dict[str, float]:
-        """P(variable | context) under the current (traded) belief state."""
+        """P(variable | context) under the current (traded) belief state.
+
+        Raises ``UnknownVariable`` when ``variable_id`` itself isn't part
+        of the joint model, or ``ContextContradicted`` when the variable
+        IS known but the supplied context has zero probability under the
+        current belief state (e.g. it conflicts with a resolution already
+        conditioned into the joint). These used to be conflated into a
+        single ``UnknownVariable`` — wrong, since an unknown variable and
+        an unsatisfiable context are different failure modes with
+        different remedies for the caller.
+        """
+        if not self._fm.has_variable(variable_id):
+            raise UnknownVariable(variable_id)
         result = self._fm.marginal(variable_id, context)
         if result is None:
-            raise UnknownVariable(variable_id)
+            raise ContextContradicted(
+                f"context yields zero probability for {variable_id}"
+            )
         return result
 
     # -- staked probability edits -----------------------------------------
@@ -166,6 +236,72 @@ class JointVenue:
         except KeyError:
             raise VenueError(f"unknown outcome: {outcome_id}") from None
 
+    def _check_lifecycle(
+        self, variable_id: str, context: dict[str, str]
+    ) -> dict[str, str]:
+        """Reject edits against a dead market; return the still-open context.
+
+        - ``variable_id`` voided or resolved -> ``MarketClosed``: an edit on
+          a market that can never resolve can never settle, so it must
+          never reach the risk engine (a bet against it would freeze funds
+          forever otherwise).
+        - a context key that's voided -> ``MarketClosed`` (same reasoning:
+          that leg of the context can never be decided).
+        - a context key resolved to an outcome that contradicts the
+          requested value -> ``ContextContradicted``.
+        - a context key resolved to the SAME value as requested: dropped
+          from the *returned* dict (the order's future ``remainingContext``
+          bookkeeping never needs to look at it again), but the caller's
+          ``context`` dict is left untouched — see ``place_edit`` /
+          ``preview_edit`` for why passing it through unstripped to
+          ``_before`` / ``fm.trade_to_probability`` is the right call.
+
+        Every rejection here happens before any risk-engine or fm call, so
+        no lock, order, or marginal is ever touched on a rejection path.
+        """
+        if variable_id in self._voided:
+            raise MarketClosed(f"variable is voided: {variable_id}")
+        if variable_id in self._resolutions:
+            raise MarketClosed(f"variable is resolved: {variable_id}")
+
+        remaining: dict[str, str] = {}
+        for key, value in context.items():
+            if key in self._voided:
+                raise MarketClosed(f"context variable is voided: {key}")
+            if key in self._resolutions:
+                if self._resolutions[key] != value:
+                    raise ContextContradicted(
+                        f"context {key}={value!r} contradicts resolved "
+                        f"outcome {self._resolutions[key]!r}"
+                    )
+                continue
+            remaining[key] = value
+        return remaining
+
+    def _stake_for_edit_or_raise(self, before: float, target: float) -> Decimal:
+        """``stake_for_edit``, wrapping msr's degenerate-probability ``ValueError``."""
+        try:
+            return stake_for_edit(self._liquidity, before, target)
+        except ValueError as err:
+            raise InvalidTarget(str(err)) from err
+
+    @staticmethod
+    def _trade_error(err: JointMarketError) -> VenueError:
+        """Classify a ``JointMarketError`` raised at the trade_to_probability boundary.
+
+        Only a genuine width-budget failure (the message names the
+        treewidth budget — see ``factored_market.py``'s ``_build_structure``)
+        becomes ``WidthBudgetExceeded``; a degenerate/already-settled price
+        becomes ``InvalidTarget``; anything else is a general
+        ``TradeRejected``.
+        """
+        message = str(err)
+        if "width" in message:
+            return WidthBudgetExceeded(message)
+        if "degenerate" in message:
+            return InvalidTarget(message)
+        return TradeRejected(message)
+
     def preview_edit(
         self,
         account_id: int,
@@ -175,10 +311,12 @@ class JointVenue:
         context: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Quote the stake for an edit without touching any state."""
+        context = dict(context or {})
+        self._check_lifecycle(variable_id, context)
         before = self._before(variable_id, outcome_id, context)
-        stake = stake_for_edit(self._liquidity, before, target)
+        stake = self._stake_for_edit_or_raise(before, target)
         return {
-            "stake": stake,
+            "stake": str(stake),
             "before": before,
             "after": target,
             "b": self._liquidity,
@@ -195,20 +333,28 @@ class JointVenue:
         """Freeze the worst-case stake and move P(variable_id = outcome_id) to target.
 
         Order of operations (money-safety property):
-        1. Resolve ``before`` from the live marginal.
-        2. Compute the stake and reject with ``InsufficientCredits`` *before*
-           touching any balances if the account can't cover it.
-        3. Lock the stake (always: the risk engine accepts a zero-amount
+        1. Lifecycle guard: reject outright (``MarketClosed`` /
+           ``ContextContradicted``) if the variable or any context key is
+           already voided or resolved-contradicting, before touching
+           anything.
+        2. Resolve ``before`` from the live marginal.
+        3. Compute the stake (wrapping a degenerate before/target as
+           ``InvalidTarget``) and reject with ``InsufficientCredits``
+           *before* touching any balances if the account can't cover it.
+        4. Lock the stake (always: the risk engine accepts a zero-amount
            lock, so a free edit still gets an order + lockId rather than a
            None sentinel — see the task report for why).
-        4. Re-triangulate/trade against the factored market; on
-           ``JointMarketError`` (width-budget or similar), release the lock
-           just created and re-raise as ``WidthBudgetExceeded`` so the
-           account and the joint are left exactly as before the call.
-        5. Record and return the order.
+        5. Re-triangulate/trade against the factored market; on
+           ``JointMarketError``, release the lock just created and
+           re-raise as the appropriate ``VenueError`` subtype (see
+           ``_trade_error``) so the account and the joint are left exactly
+           as before the call.
+        6. Record and return the order.
         """
+        context = dict(context or {})
+        remaining_context = self._check_lifecycle(variable_id, context)
         before = self._before(variable_id, outcome_id, context)
-        stake = stake_for_edit(self._liquidity, before, target)
+        stake = self._stake_for_edit_or_raise(before, target)
 
         if stake > 0 and not self._risk_engine.check_available(account_id, stake):
             raise InsufficientCredits(
@@ -223,24 +369,23 @@ class JointVenue:
             fill = self._fm.trade_to_probability(variable_id, outcome_id, target, context)
         except JointMarketError as err:
             self._risk_engine.release_lock(lock.lock_id)
-            raise WidthBudgetExceeded(str(err)) from err
+            raise self._trade_error(err) from err
 
         self._order_seq += 1
-        order_context = dict(context or {})
         order = {
             "orderId": f"vb_{self._order_seq}",
             "accountId": account_id,
             "variableId": variable_id,
             "outcomeId": outcome_id,
             "target": target,
-            "context": order_context,
+            "context": dict(context),
             "before": before,
             "after": target,
             "stake": str(stake),
             "lockId": lock.lock_id,
             "status": "open",
             "fill": fill,
-            "remainingContext": dict(order_context),
+            "remainingContext": remaining_context,
         }
         self._orders.append(order)
         self._orders_by_var.setdefault(variable_id, []).append(order)
@@ -297,6 +442,7 @@ class JointVenue:
         for order in self._orders:
             if order["status"] not in ("open", "awaiting_context"):
                 continue
+            was_awaiting = order["status"] == "awaiting_context"
 
             remaining = order["remainingContext"]
             if variable_id in remaining:
@@ -336,7 +482,14 @@ class JointVenue:
                 settled.append(order["orderId"])
             elif "resolvedWon" in order:
                 order["status"] = "awaiting_context"
-                awaiting.append(order["orderId"])
+                if not was_awaiting:
+                    # Only report orders that TRANSITIONED to
+                    # awaiting_context during this call — an order that
+                    # was already awaiting_context and just had one (of
+                    # several) pending context keys satisfied, without
+                    # emptying remainingContext, didn't transition and
+                    # must not be re-listed.
+                    awaiting.append(order["orderId"])
 
         return {
             "settled": settled,
@@ -436,11 +589,30 @@ class JointVenue:
         keep the seeds-only rebuild: traded prices are lost (marginals fall
         back to seed priors) but orders/resolutions/voids are preserved
         untouched, so settlement bookkeeping still works — this degraded
-        state is an accepted, documented fallback, not a crash.
+        state is an accepted, documented fallback, not a crash. To keep
+        that fallback *consistent* rather than merely non-crashing, every
+        already-recorded resolution is replayed onto the fresh seeds-only
+        ``fm`` via ``fm.condition`` — otherwise a resolved variable's
+        children would read back at their unconditioned prior instead of
+        the correct conditioned value.
+
+        Before any of that, the treasury account is checked eagerly: if
+        ``treasuryAccountId`` isn't present in ``risk_engine``, this raises
+        ``VenueError`` immediately rather than deferring the failure to the
+        first settlement that tries to pay out of a treasury that was
+        never restored.
         """
         liquidity = Decimal(str(data["liquidity"]))
         max_width = int(data["maxWidth"])
         treasury_account_id = int(data["treasuryAccountId"])
+
+        try:
+            risk_engine.get_account(treasury_account_id)
+        except ValueError as err:
+            raise VenueError(
+                f"treasury account {treasury_account_id} not found in risk "
+                "engine; refusing to restore a venue whose treasury vanished"
+            ) from err
 
         venue = cls(
             risk_engine,
@@ -450,6 +622,8 @@ class JointVenue:
             _bootstrap_treasury=False,
             _treasury_account_id=treasury_account_id,
         )
+
+        resolutions = dict(data.get("resolutions", {}))
 
         fm_data = data.get("fm")
         if fm_data is not None:
@@ -462,10 +636,12 @@ class JointVenue:
                     "from seeds — traded prices are lost, orders are kept.",
                     type(err).__name__, err,
                 )
+                for var, outcome in resolutions.items():
+                    venue._fm.condition(var, outcome)
 
         venue._orders = [dict(order) for order in data.get("orders", [])]
         venue._order_seq = int(data.get("orderSeq", 0))
-        venue._resolutions = dict(data.get("resolutions", {}))
+        venue._resolutions = resolutions
         venue._voided = set(data.get("voided", []))
 
         venue._orders_by_var = {}
@@ -482,10 +658,13 @@ class JointVenue:
     # -- internal bookkeeping --------------------------------------------
 
     def _vb_lock_market_id(self, variable_id: str) -> int:
-        """Stable int id for RiskEngine lock bookkeeping.
+        """Stable int id for RiskEngine lock bookkeeping: O(1) lookup.
 
         1_000_000 + the index of the market (owning ``variable_id``) in
-        seed order.
+        seed order, precomputed once in ``self._lock_ids`` at construction
+        (both the bootstrap and the restore path run through ``__init__``,
+        so there's a single place this table is built). Raises ``KeyError``
+        for an unknown variable, same as the old ``self._var_to_market[...]``
+        lookup did.
         """
-        market_id = self._var_to_market[variable_id]
-        return 1_000_000 + self.market_ids().index(market_id)
+        return self._lock_ids[variable_id]
