@@ -770,17 +770,19 @@ async def get_leaderboard() -> LeaderboardResponse:
         (``app.state.joint.treasury_account_id``, seeded with 1,000,000
         credits — ``TREASURY_SEED`` in venues/joint/venue.py);
       - service accounts, i.e. the bot/agent accounts created via
-        ``POST /v1/admin/service-accounts``. Those are the only ``User``
-        records stored in ``auth_store.local_users`` (keyed by username,
-        ``github_id=0``) rather than ``auth_store.users`` (keyed by real
-        GitHub id) — that's exactly the marker the admin endpoint already
-        relies on to tell them apart, so membership in ``local_users`` is
-        the exclusion test here too.
+        ``POST /v1/admin/service-accounts``. Those ``User`` records are
+        stored in ``auth_store.local_users`` (keyed by username,
+        ``github_id=0``) and marked with ``is_service_account=True`` by
+        that endpoint. The exclusion test is the explicit flag, not
+        ``local_users`` membership: legacy entries left over from the
+        removed ``POST /v1/auth/register`` path (real humans, kept in
+        ``local_users`` for auth continuity per core/auth.py) have
+        ``is_service_account=False`` and must still appear on the board.
 
     Logins are resolved from ``auth_store.users`` (github_id -> User): an
     account owned by a real GitHub identity gets its login; any other
     account still in the ranking (e.g. one created via the plain
-    ``POST /v1/admin/accounts``) gets ``null``.
+    ``POST /v1/admin/accounts``, or a legacy local human) gets ``null``.
     """
     auth_store = app.state.auth_store
 
@@ -793,6 +795,7 @@ async def get_leaderboard() -> LeaderboardResponse:
             excluded_ids.add(joint.treasury_account_id)
         excluded_ids |= {
             u.account_id for u in auth_store.local_users.values()
+            if u.is_service_account
         }
 
         login_by_account = {
@@ -1253,6 +1256,7 @@ async def admin_create_service_account(
             github_login=username,
             account_id=acc.id,
             api_key_hash=key_hash,
+            is_service_account=True,
         )
         auth_store.local_users[username] = user
         auth_store.key_to_user[key_hash] = user

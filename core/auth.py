@@ -29,6 +29,12 @@ class User:
     api_key_hash: str
     created_at: str = field(default_factory=_now)
     last_seen_at: str = field(default_factory=_now)
+    # Explicit marker for bot/agent accounts created via
+    # POST /v1/admin/service-accounts. Defaults to False so that legacy
+    # ``local_users`` entries left over from the removed
+    # POST /v1/auth/register path (real humans, not bots) are never
+    # mistaken for service accounts just because of where they're stored.
+    is_service_account: bool = False
 
 
 def _hash_key(raw_key: str) -> str:

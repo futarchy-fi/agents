@@ -307,3 +307,103 @@ class TestLeaderboard:
             resp = await _get("/v1/leaderboard")
             assert resp.status_code == 200
             assert "entries" in resp.json()
+
+    async def test_legacy_local_human_appears_service_account_does_not(
+        self, tmp_path
+    ):
+        """A funded ``auth_store.local_users`` entry is not necessarily a
+        service account: the removed ``POST /v1/auth/register`` path used
+        to store real humans there too (kept for auth continuity, see
+        core/auth.py). Hand-construct that legacy shape directly on the
+        auth store (bypassing the admin endpoint, which always sets the
+        flag) so the exclusion test is proven to be ``is_service_account``
+        and not ``local_users`` membership.
+        """
+        reset_counters()
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            from core.auth import User
+
+            auth_store = app.state.auth_store
+            legacy_acc = app.state.risk.create_account()
+            app.state.risk.mint(legacy_acc.id, Decimal("777"))
+            legacy_user = User(
+                github_id=0,
+                github_login="legacy_human",
+                account_id=legacy_acc.id,
+                api_key_hash="deadbeef",
+                # is_service_account intentionally omitted -> defaults False,
+                # exactly the shape a pre-flag snapshot would produce.
+            )
+            auth_store.local_users["legacy_human"] = legacy_user
+
+            svc_resp = await _post(
+                "/v1/admin/service-accounts",
+                {"username": "bot2", "initial_credits": "777"},
+                headers=ADMIN_HEADERS,
+            )
+            assert svc_resp.status_code == 200
+            svc_account_id = svc_resp.json()["account_id"]
+
+            resp = await _get("/v1/leaderboard")
+            assert resp.status_code == 200
+            entry_ids = [e["accountId"] for e in resp.json()["entries"]]
+
+            assert legacy_acc.id in entry_ids
+            assert svc_account_id not in entry_ids
+
+
+# ---------------------------------------------------------------------------
+# 6/6. is_service_account flag — persistence roundtrip
+# ---------------------------------------------------------------------------
+
+class TestServiceAccountFlagPersistence:
+    def test_roundtrip_survives_save_and_load(self, tmp_path):
+        from core.auth import AuthStore, User
+        from core.market_engine import MarketEngine
+        from core.persistence import load_snapshot, save_snapshot
+        from core.risk_engine import RiskEngine
+
+        reset_counters()
+        risk = RiskEngine()
+        me = MarketEngine(risk)
+        auth_store = AuthStore()
+
+        svc_acc = risk.create_account()
+        auth_store.local_users["bot"] = User(
+            github_id=0, github_login="bot", account_id=svc_acc.id,
+            api_key_hash="hash1", is_service_account=True,
+        )
+        human_acc = risk.create_account()
+        auth_store.local_users["human"] = User(
+            github_id=0, github_login="human", account_id=human_acc.id,
+            api_key_hash="hash2", is_service_account=False,
+        )
+
+        state_path = tmp_path / "state.json"
+        save_snapshot(risk, me, str(state_path), auth_store=auth_store,
+                       tracked_repos={})
+
+        _, _, loaded_auth, _, _ = load_snapshot(str(state_path))
+        assert loaded_auth.local_users["bot"].is_service_account is True
+        assert loaded_auth.local_users["human"].is_service_account is False
+
+    def test_legacy_snapshot_without_field_loads_as_false(self):
+        from core.persistence import _load_auth
+
+        auth_data = {
+            "users": [],
+            "local_users": [
+                {
+                    "username": "legacy",
+                    "account_id": 1,
+                    "api_key_hash": "hash3",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "last_seen_at": "2026-01-01T00:00:00+00:00",
+                    # no "is_service_account" key at all -- pre-flag shape.
+                },
+            ],
+        }
+        store = _load_auth(auth_data)
+        assert store.local_users["legacy"].is_service_account is False
