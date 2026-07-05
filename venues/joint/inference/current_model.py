@@ -7,7 +7,7 @@ import json
 import math
 import time
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
@@ -389,7 +389,11 @@ class CurrentModelCompileArtifact:
     memory_bytes: int
     # Priors of the context (parent) variables referenced by
     # conditional_marginals keys; used to marginalize partial contexts.
-    parent_marginals: Mapping[str, Mapping[str, float]] = MappingProxyType({})
+    # default_factory, not MappingProxyType({}): Python <=3.12 rejects a
+    # mappingproxy dataclass default as mutable (deploy target is 3.11).
+    parent_marginals: Mapping[str, Mapping[str, float]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "outcomes", tuple(self.outcomes))
