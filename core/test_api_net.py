@@ -26,9 +26,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import core.api as api_module
-from core.api import app
+from core.api import app, _authenticate_github_identity
 from core.models import reset_counters
 from core.persistence import load_snapshot
+from venues.joint.msr import stake_for_edit
 from venues.joint.test_venue import TINY_SEEDS, THREE_VAR_SEEDS
 
 ADMIN_HEADERS = {"Authorization": "Bearer test-admin-key"}
@@ -48,11 +49,32 @@ async def _get_json(path: str) -> dict:
         return resp.json()
 
 
-async def _get(path: str):
+async def _get(path: str, headers: dict | None = None):
     """GET without asserting status — for tests exercising error paths."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
-        return await c.get(path)
+        return await c.get(path, headers=headers or {})
+
+
+async def _post(path: str, body: dict, headers: dict | None = None):
+    """POST without asserting status — for tests exercising error paths."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        return await c.post(path, json=body, headers=headers or {})
+
+
+async def _authed_user(github_id: int = 1, login: str = "netuser") -> tuple[str, int]:
+    """Create a user (minted INITIAL_CREDITS) and return (api_key, account_id).
+
+    Mirrors ``_mock_auth`` in core/test_api.py, adapted to this module's
+    "drive lifespan directly" pattern (no ``client`` fixture here).
+    """
+    auth = await _authenticate_github_identity({"id": github_id, "login": login})
+    return auth.api_key, auth.account_id
+
+
+def _headers(api_key: str) -> dict:
+    return {"Authorization": f"Bearer {api_key}"}
 
 
 @pytest.fixture(autouse=True)
@@ -325,3 +347,331 @@ class TestNetRoutesDisabled:
                 resp = await _get(path)
                 assert resp.status_code == 503, path
                 assert resp.json()["error"]["code"] == "net_venue_disabled", path
+
+
+# ---------------------------------------------------------------------------
+# Task B3: net trading endpoints (authed)
+# ---------------------------------------------------------------------------
+
+class TestNetOrderPreview:
+    async def test_preview_matches_msr_and_leaves_state_untouched(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            before = app.state.joint.marginal("gcx_a")["yes"]
+            expected_stake = stake_for_edit(Decimal("50"), before, 0.8)
+
+            resp = await _post(
+                "/v1/net/orders/preview",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8},
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["stake"] == str(expected_stake)
+            assert data["before"] == pytest.approx(before, abs=1e-9)
+            assert data["after"] == pytest.approx(0.8, abs=1e-9)
+            assert data["b"] == "50"
+
+            # No mutation: marginal and balances unchanged.
+            assert app.state.joint.marginal("gcx_a")["yes"] == pytest.approx(
+                before, abs=1e-9
+            )
+            account = app.state.risk.get_account(account_id)
+            assert account.available_balance == Decimal("1000")
+            assert account.frozen_balance == Decimal("0")
+            assert len(app.state.joint._orders) == 0
+
+
+class TestNetOrderPlace:
+    async def test_place_freezes_exact_stake_and_moves_marginal(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            before = app.state.joint.marginal("gcx_a")["yes"]
+            expected_stake = stake_for_edit(Decimal("50"), before, 0.8)
+
+            resp = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8},
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["orderId"] == "vb_1"
+            assert data["accountId"] == account_id
+            assert data["stake"] == str(expected_stake)
+            assert data["balance"]["frozen"] == str(expected_stake)
+            assert data["balance"]["available"] == str(
+                Decimal("1000") - expected_stake
+            )
+
+            # Balance read back directly off the account (not just trusting
+            # the response echo).
+            account = app.state.risk.get_account(account_id)
+            assert account.frozen_balance == expected_stake
+            assert account.available_balance == Decimal("1000") - expected_stake
+
+            # And via /v1/me over HTTP.
+            me_resp = await _get("/v1/me", headers=_headers(api_key))
+            assert me_resp.status_code == 200
+            me_data = me_resp.json()
+            assert me_data["frozen"] == str(expected_stake)
+            assert me_data["available"] == str(Decimal("1000") - expected_stake)
+
+            # Marginal moved to the target.
+            assert app.state.joint.marginal("gcx_a")["yes"] == pytest.approx(
+                0.8, abs=1e-6
+            )
+
+    async def test_place_response_never_leaks_another_accounts_data(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            key1, acc1 = await _authed_user(github_id=1, login="u1")
+            key2, acc2 = await _authed_user(github_id=2, login="u2")
+            assert acc1 != acc2
+
+            resp1 = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.7},
+                headers=_headers(key1),
+            )
+            assert resp1.status_code == 200
+            assert resp1.json()["accountId"] == acc1
+
+            resp2 = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_b", "outcomeId": "yes", "target": 0.5},
+                headers=_headers(key2),
+            )
+            assert resp2.status_code == 200
+            assert resp2.json()["accountId"] == acc2
+            assert resp2.json()["accountId"] != acc1
+
+
+class TestNetOrderInsufficientCredits:
+    async def test_place_with_tiny_balance_400s_with_zero_state_change(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            account = app.state.risk.get_account(account_id)
+            account.available_balance = Decimal("0.01")
+            before = app.state.joint.marginal("gcx_a")["yes"]
+
+            resp = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8},
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 400
+            assert resp.json()["error"]["code"] == "insufficient_credits"
+
+            # Zero state change: no lock, no order, no marginal move.
+            assert account.available_balance == Decimal("0.01")
+            assert account.frozen_balance == Decimal("0")
+            assert app.state.joint.marginal("gcx_a")["yes"] == pytest.approx(
+                before, abs=1e-9
+            )
+            assert len(app.state.joint._orders) == 0
+
+
+class TestNetOrderTargetClamp:
+    async def test_target_above_clamp_400s_without_venue_call(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            before = app.state.joint.marginal("gcx_a")["yes"]
+
+            resp = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.9995},
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 400
+            assert resp.json()["error"]["code"] == "invalid_target"
+
+            # Venue never touched: no order created, marginal unmoved.
+            assert len(app.state.joint._orders) == 0
+            assert app.state.joint.marginal("gcx_a")["yes"] == pytest.approx(
+                before, abs=1e-9
+            )
+
+    async def test_target_below_clamp_400s_on_preview_too(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+
+            resp = await _post(
+                "/v1/net/orders/preview",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.0005},
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 400
+            assert resp.json()["error"]["code"] == "invalid_target"
+            assert len(app.state.joint._orders) == 0
+
+
+class TestNetOrderResolvedVariable:
+    async def test_edit_on_resolved_variable_409s(self, tmp_path, monkeypatch):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            api_key, account_id = await _authed_user()
+            # Resolve directly on the venue object — admin routes are B4.
+            app.state.joint.resolve_variable("gcx_a", "yes")
+
+            resp = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8},
+                headers=_headers(api_key),
+            )
+            assert resp.status_code == 409
+            assert resp.json()["error"]["code"] == "market_closed"
+
+            preview_resp = await _post(
+                "/v1/net/orders/preview",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8},
+                headers=_headers(api_key),
+            )
+            assert preview_resp.status_code == 409
+            assert preview_resp.json()["error"]["code"] == "market_closed"
+
+
+class TestNetOrderAuth:
+    async def test_unauthenticated_401s_on_all_three_routes(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            body = {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8}
+
+            resp = await _post("/v1/net/orders/preview", body)
+            assert resp.status_code == 401
+
+            resp = await _post("/v1/net/orders", body)
+            assert resp.status_code == 401
+
+            resp = await _get("/v1/net/orders/mine")
+            assert resp.status_code == 401
+
+            # A bad Bearer key is likewise rejected.
+            bad = {"Authorization": "Bearer not-a-real-key"}
+            resp = await _post("/v1/net/orders/preview", body, headers=bad)
+            assert resp.status_code == 401
+            resp = await _post("/v1/net/orders", body, headers=bad)
+            assert resp.status_code == 401
+            resp = await _get("/v1/net/orders/mine", headers=bad)
+            assert resp.status_code == 401
+
+
+class TestNetOrderVenueDisabled:
+    async def test_all_three_routes_503_when_venue_disabled(self, tmp_path):
+        reset_counters()
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            assert app.state.joint is None
+            api_key, account_id = await _authed_user()
+            body = {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.8}
+
+            resp = await _post(
+                "/v1/net/orders/preview", body, headers=_headers(api_key)
+            )
+            assert resp.status_code == 503
+            assert resp.json()["error"]["code"] == "net_venue_disabled"
+
+            resp = await _post("/v1/net/orders", body, headers=_headers(api_key))
+            assert resp.status_code == 503
+            assert resp.json()["error"]["code"] == "net_venue_disabled"
+
+            resp = await _get("/v1/net/orders/mine", headers=_headers(api_key))
+            assert resp.status_code == 503
+            assert resp.json()["error"]["code"] == "net_venue_disabled"
+
+
+class TestNetOrdersMine:
+    async def test_each_user_sees_only_own_orders_newest_first(
+        self, tmp_path, monkeypatch
+    ):
+        reset_counters()
+        seeds_path = _write_seeds(tmp_path)
+        monkeypatch.setenv("EXCHANGE_SEEDS_PATH", seeds_path)
+        api_module.STATE_PATH = str(tmp_path / "state.json")
+
+        async with api_module.lifespan(app):
+            key1, acc1 = await _authed_user(github_id=1, login="u1")
+            key2, acc2 = await _authed_user(github_id=2, login="u2")
+
+            r1 = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "yes", "target": 0.7},
+                headers=_headers(key1),
+            )
+            assert r1.status_code == 200
+            r2 = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_b", "outcomeId": "yes", "target": 0.5},
+                headers=_headers(key2),
+            )
+            assert r2.status_code == 200
+            r3 = await _post(
+                "/v1/net/orders",
+                {"variableId": "gcx_a", "outcomeId": "no", "target": 0.55},
+                headers=_headers(key1),
+            )
+            assert r3.status_code == 200
+
+            resp1 = await _get("/v1/net/orders/mine", headers=_headers(key1))
+            assert resp1.status_code == 200
+            data1 = resp1.json()
+            assert [o["orderId"] for o in data1["orders"]] == ["vb_3", "vb_1"]
+            assert all(o["accountId"] == acc1 for o in data1["orders"])
+
+            resp2 = await _get("/v1/net/orders/mine", headers=_headers(key2))
+            assert resp2.status_code == 200
+            data2 = resp2.json()
+            assert [o["orderId"] for o in data2["orders"]] == ["vb_2"]
+            assert data2["orders"][0]["accountId"] == acc2

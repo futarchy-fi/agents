@@ -218,6 +218,53 @@ class NetMarginalResponse(BaseModel):
     marginal: dict[str, float]
 
 
+class NetOrderRequest(BaseModel):
+    """Body shared by preview and place. Deliberately has no accountId field
+    — the account is always ``user.account_id`` from the Bearer key, never
+    client-supplied (see planB-constraints.md's security invariant)."""
+    variableId: str
+    outcomeId: str
+    target: float
+    context: dict[str, str] | None = None
+
+
+class NetOrderPreviewResponse(BaseModel):
+    stake: str
+    before: float
+    after: float
+    b: str
+
+
+class NetOrderBalance(BaseModel):
+    available: str
+    frozen: str
+
+
+class NetOrder(BaseModel):
+    """A copy of a venue order record — never the live dict by reference."""
+    orderId: str
+    accountId: int
+    variableId: str
+    outcomeId: str
+    target: float
+    context: dict[str, str]
+    before: float
+    after: float
+    stake: str
+    lockId: int
+    status: str
+    fill: dict[str, float]
+    remainingContext: dict[str, str]
+
+
+class NetOrderResponse(NetOrder):
+    balance: NetOrderBalance
+
+
+class NetOrdersList(BaseModel):
+    orders: list[NetOrder]
+
+
 class HealthResponse(BaseModel):
     status: str
     markets: int

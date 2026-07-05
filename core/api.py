@@ -23,7 +23,9 @@ import httpx
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse
 
-from core.api_errors import APIError, api_error_handler, translate_engine_error
+from core.api_errors import (
+    APIError, api_error_handler, translate_engine_error, translate_venue_error,
+)
 from core.api_models import (
     AuthResponse,
     DeviceFlowStartRequest, DeviceFlowResponse, DeviceFlowPollRequest,
@@ -40,6 +42,8 @@ from core.api_models import (
     UpdateMetadataRequest,
     AddRepoRequest, TrackedRepoResponse, WebhookResponse,
     NetMarket, NetMarketList, NetMarginalResponse,
+    NetOrderRequest, NetOrderPreviewResponse, NetOrderBalance,
+    NetOrder, NetOrderResponse, NetOrdersList,
 )
 from core.auth import (
     AuthStore, validate_github_token,
@@ -51,9 +55,7 @@ from core.middleware import AuthUser, AdminDep, require_auth, rate_limiter
 from core.models import ZERO, TrackedRepo, reset_counters
 from core.persistence import save_snapshot, load_snapshot
 from core.risk_engine import RiskEngine, InsufficientBalance
-from venues.joint.venue import (
-    ContextContradicted, JointVenue, UnknownMarket, UnknownVariable, VenueError,
-)
+from venues.joint.venue import JointVenue, VenueError
 
 logger = logging.getLogger(__name__)
 
@@ -819,8 +821,8 @@ async def get_net_market(market_id: str) -> NetMarket:
     async with app.state.lock:
         try:
             record = joint.get_market(market_id)
-        except UnknownMarket as err:
-            raise APIError(404, "unknown_market", str(err)) from err
+        except VenueError as err:
+            raise translate_venue_error(err) from err
     return _to_net_market(record)
 
 
@@ -835,11 +837,114 @@ async def get_net_marginal(
     async with app.state.lock:
         try:
             result = joint.marginal(variable, ctx)
-        except UnknownVariable as err:
-            raise APIError(404, "unknown_market", str(err)) from err
-        except ContextContradicted as err:
-            raise APIError(409, "context_contradicted", str(err)) from err
+        except VenueError as err:
+            raise translate_venue_error(err) from err
     return NetMarginalResponse(variable=variable, context=ctx, marginal=dict(result))
+
+
+# ---------------------------------------------------------------------------
+# Net venue: staked probability-edit orders (Task B3) — authed.
+# ---------------------------------------------------------------------------
+
+_TARGET_MIN = 0.001
+_TARGET_MAX = 0.999
+
+
+def _check_target_clamp(target: float) -> None:
+    """Reject a target outside [0.001, 0.999] with 400 invalid_target.
+
+    Must run BEFORE any venue call (preview_edit/place_edit) — see
+    planB-constraints.md's API-level target clamp requirement.
+    """
+    if not (_TARGET_MIN <= target <= _TARGET_MAX):
+        raise APIError(
+            400, "invalid_target",
+            f"target must be within [{_TARGET_MIN}, {_TARGET_MAX}]: {target}",
+        )
+
+
+def _to_net_order(order: dict) -> NetOrder:
+    """Copy a venue order record into a response model.
+
+    Every mutable field is copied (context/fill/remainingContext) rather
+    than handed to the response model by reference — the venue's order
+    dict is live internal state (see ``_to_net_market`` above for the same
+    discipline on market records).
+    """
+    return NetOrder(
+        orderId=order["orderId"],
+        accountId=order["accountId"],
+        variableId=order["variableId"],
+        outcomeId=order["outcomeId"],
+        target=order["target"],
+        context=dict(order["context"]),
+        before=order["before"],
+        after=order["after"],
+        stake=order["stake"],
+        lockId=order["lockId"],
+        status=order["status"],
+        fill=dict(order["fill"]),
+        remainingContext=dict(order["remainingContext"]),
+    )
+
+
+@app.post("/v1/net/orders/preview")
+async def preview_net_order(req: NetOrderRequest, user: AuthUser) -> NetOrderPreviewResponse:
+    """Quote the stake for a probability edit without touching any state."""
+    _check_target_clamp(req.target)
+    joint = _require_joint()
+    async with app.state.lock:
+        try:
+            result = joint.preview_edit(
+                user.account_id, req.variableId, req.outcomeId, req.target,
+                req.context,
+            )
+        except VenueError as err:
+            raise translate_venue_error(err) from err
+    return NetOrderPreviewResponse(
+        stake=result["stake"],
+        before=result["before"],
+        after=result["after"],
+        b=str(result["b"]),
+    )
+
+
+@app.post("/v1/net/orders")
+async def place_net_order(req: NetOrderRequest, user: AuthUser) -> NetOrderResponse:
+    """Place a staked probability edit; freezes the worst-case stake."""
+    _check_target_clamp(req.target)
+    joint = _require_joint()
+    async with app.state.lock:
+        try:
+            order = joint.place_edit(
+                user.account_id, req.variableId, req.outcomeId, req.target,
+                req.context,
+            )
+            _save()
+        except VenueError as err:
+            raise translate_venue_error(err) from err
+        account = app.state.risk.get_account(user.account_id)
+        balance = NetOrderBalance(
+            available=str(account.available_balance),
+            frozen=str(account.frozen_balance),
+        )
+    base = _to_net_order(order)
+    return NetOrderResponse(**base.model_dump(), balance=balance)
+
+
+@app.get("/v1/net/orders/mine")
+async def list_my_net_orders(user: AuthUser) -> NetOrdersList:
+    """The caller's own net-venue orders, newest-first."""
+    joint = _require_joint()
+    async with app.state.lock:
+        # joint._orders is append-order (oldest first); no public accessor
+        # exists yet (matches the existing joint._orders reach-in used by
+        # the health endpoint above). Filtered by accountId == the caller's
+        # own before any copy is made, so another account's order is never
+        # even converted to a response model.
+        mine = [o for o in joint._orders if o["accountId"] == user.account_id]
+    orders = [_to_net_order(o) for o in reversed(mine)]
+    return NetOrdersList(orders=orders)
 
 
 # ---------------------------------------------------------------------------

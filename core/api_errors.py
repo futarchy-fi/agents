@@ -8,6 +8,16 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from core.risk_engine import InsufficientBalance
+from venues.joint.venue import (
+    ContextContradicted,
+    InsufficientCredits,
+    InvalidTarget,
+    MarketClosed,
+    UnknownMarket,
+    UnknownVariable,
+    VenueError,
+    WidthBudgetExceeded,
+)
 
 
 class APIError(Exception):
@@ -64,3 +74,37 @@ def translate_engine_error(exc: Exception) -> APIError:
         return APIError(400, "invalid_amount", msg)
 
     return APIError(400, "bad_request", msg)
+
+
+def translate_venue_error(exc: VenueError) -> APIError:
+    """Translate net-venue (Plan B / JointVenue) errors to structured API errors.
+
+    Exact mapping per planB-constraints.md:
+    UnknownVariable/UnknownMarket -> 404 unknown_market; InvalidTarget ->
+    400 invalid_target; InsufficientCredits -> 400 insufficient_credits;
+    MarketClosed -> 409 market_closed; ContextContradicted -> 409
+    context_contradicted; WidthBudgetExceeded -> 422 width_budget.
+
+    ``TradeRejected`` (and any other, currently unforeseen, ``VenueError``
+    subtype) isn't in that list — it's the catch-all for a rejected
+    trade_to_probability call that's neither a width-budget nor a
+    degenerate-price failure, so it falls through to a generic 400
+    trade_rejected rather than silently matching one of the specific
+    branches above.
+    """
+    msg = str(exc)
+
+    if isinstance(exc, (UnknownVariable, UnknownMarket)):
+        return APIError(404, "unknown_market", msg)
+    if isinstance(exc, InvalidTarget):
+        return APIError(400, "invalid_target", msg)
+    if isinstance(exc, InsufficientCredits):
+        return APIError(400, "insufficient_credits", msg)
+    if isinstance(exc, MarketClosed):
+        return APIError(409, "market_closed", msg)
+    if isinstance(exc, ContextContradicted):
+        return APIError(409, "context_contradicted", msg)
+    if isinstance(exc, WidthBudgetExceeded):
+        return APIError(422, "width_budget", msg)
+
+    return APIError(400, "trade_rejected", msg)
